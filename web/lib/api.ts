@@ -277,12 +277,15 @@ export const api = {
   },
 
   async logout(): Promise<void> {
+    // Best-effort: tell the server to revoke the session, but never fail the
+    // client logout if that call errors — always drop the local token.
     try {
       await request<{ loggedOut: boolean }>('/v1/auth/logout', {
         method: 'POST',
       });
+    } catch {
+      // ignore server-side logout failure
     } finally {
-      // Always drop the local token, even if the server call fails.
       clearToken();
     }
   },

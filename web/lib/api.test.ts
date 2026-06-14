@@ -33,7 +33,8 @@ function mockFetchOnce({ status = 200, body, rawText }: MockResponseInit) {
     statusText: `status ${status}`,
     text: async () => text,
   } as unknown as Response;
-  const fn = vi.fn(async () => res);
+  // Typed params so `fn.mock.calls[i]` is a [url, init?] tuple, not [].
+  const fn = vi.fn(async (_url: string, _init?: RequestInit) => res);
   vi.stubGlobal('fetch', fn);
   return fn;
 }
