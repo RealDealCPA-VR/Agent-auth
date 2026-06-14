@@ -117,10 +117,32 @@ export function listPending(passportIds: string[]) {
  * Only acts on status='pending'. Approval refreshes the grant's TTL so the
  * window starts at the moment of approval.
  */
+const decisionFields = {
+  id: schema.approvalRequests.id,
+  credentialId: schema.approvalRequests.credentialId,
+  agentId: schema.approvalRequests.agentId,
+  passportId: schema.approvalRequests.passportId,
+  status: schema.approvalRequests.status,
+  createdAt: schema.approvalRequests.createdAt,
+  decidedAt: schema.approvalRequests.decidedAt,
+  expiresAt: schema.approvalRequests.expiresAt,
+} as const;
+
+export type ApprovalRequestRow = {
+  id: string;
+  credentialId: string;
+  agentId: string;
+  passportId: string;
+  status: 'pending' | 'approved' | 'denied';
+  createdAt: Date;
+  decidedAt: Date | null;
+  expiresAt: Date;
+};
+
 export async function approve(
   requestId: string,
   principalId: string,
-): Promise<{ id: string; status: 'approved' } | null> {
+): Promise<ApprovalRequestRow | null> {
   const now = Date.now();
   const owned = db
     .select({ id: schema.passports.id })
@@ -142,15 +164,15 @@ export async function approve(
         inArray(schema.approvalRequests.passportId, owned),
       ),
     )
-    .returning({ id: schema.approvalRequests.id });
-  return updated[0] ? { id: updated[0].id, status: 'approved' } : null;
+    .returning(decisionFields);
+  return updated[0] ?? null;
 }
 
 /** Deny a pending request the caller owns (same ownership/status guards). */
 export async function deny(
   requestId: string,
   principalId: string,
-): Promise<{ id: string; status: 'denied' } | null> {
+): Promise<ApprovalRequestRow | null> {
   const owned = db
     .select({ id: schema.passports.id })
     .from(schema.passports)
@@ -166,6 +188,6 @@ export async function deny(
         inArray(schema.approvalRequests.passportId, owned),
       ),
     )
-    .returning({ id: schema.approvalRequests.id });
-  return updated[0] ? { id: updated[0].id, status: 'denied' } : null;
+    .returning(decisionFields);
+  return updated[0] ?? null;
 }
