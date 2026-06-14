@@ -15,6 +15,7 @@ import { principalRoutes } from './routes/principals.js';
 import { passportRoutes } from './routes/passports.js';
 import { agentRoutes } from './routes/agents.js';
 import { vaultRoutes } from './routes/vault.js';
+import { approvalRoutes } from './routes/approvals.js';
 import { auditRoutes } from './routes/audit.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -187,6 +188,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(passportRoutes);
   await app.register(agentRoutes);
   await app.register(vaultRoutes);
+  await app.register(approvalRoutes);
   await app.register(auditRoutes);
 
   return app;

@@ -135,6 +135,46 @@ export const revokedSessions = pgTable(
   }),
 );
 
+export const approvalStatus = pgEnum('approval_status', ['pending', 'approved', 'denied']);
+
+/**
+ * approval_requests — the human-in-the-loop gate for credentials whose policy
+ * sets requireApproval. An agent's `use` call materializes a pending row; a human
+ * owner approves or denies it. An approved row is single-use: it is consumed
+ * (consumedAt set) by the next successful use, and a fresh request is required
+ * after that. Rows carry their own TTL (`expiresAt`) so stale grants can't be
+ * replayed; pending rows past TTL are ignored and re-requested.
+ */
+export const approvalRequests = pgTable(
+  'approval_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    credentialId: uuid('credential_id')
+      .notNull()
+      .references(() => credentials.id, { onDelete: 'cascade' }),
+    passportId: uuid('passport_id')
+      .notNull()
+      .references(() => passports.id, { onDelete: 'cascade' }),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    status: approvalStatus('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decidedBy: uuid('decided_by'), // principal who approved/denied
+    consumedAt: timestamp('consumed_at', { withTimezone: true }), // set when an approval is spent
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    byPassport: index('approval_requests_passport_idx').on(t.passportId),
+    byCredAgentStatus: index('approval_requests_cred_agent_status_idx').on(
+      t.credentialId,
+      t.agentId,
+      t.status,
+    ),
+  }),
+);
+
 export const auditAction = pgEnum('audit_action', [
   'principal.register',
   'principal.login',
@@ -144,6 +184,8 @@ export const auditAction = pgEnum('audit_action', [
   'credential.use',
   'agent.issue',
   'agent.revoke',
+  'approval.approve',
+  'approval.deny',
   'auth.denied',
   'authz.denied',
 ]);

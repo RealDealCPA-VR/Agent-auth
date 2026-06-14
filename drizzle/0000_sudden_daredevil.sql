@@ -1,4 +1,5 @@
-CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'auth.denied', 'authz.denied');--> statement-breakpoint
+CREATE TYPE "public"."approval_status" AS ENUM('pending', 'approved', 'denied');--> statement-breakpoint
+CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'approval.approve', 'approval.deny', 'auth.denied', 'authz.denied');--> statement-breakpoint
 CREATE TYPE "public"."credential_type" AS ENUM('password', 'oauth_token', 'cookie', 'api_key');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -11,6 +12,19 @@ CREATE TABLE IF NOT EXISTS "agents" (
 	"expires_at" timestamp with time zone,
 	"last_used_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "approval_requests" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"credential_id" uuid NOT NULL,
+	"passport_id" uuid NOT NULL,
+	"agent_id" uuid NOT NULL,
+	"status" "approval_status" DEFAULT 'pending' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"decided_at" timestamp with time zone,
+	"decided_by" uuid,
+	"consumed_at" timestamp with time zone,
+	"expires_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "audit_events" (
@@ -79,6 +93,24 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
+ ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_credential_id_credentials_id_fk" FOREIGN KEY ("credential_id") REFERENCES "public"."credentials"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_passport_id_passports_id_fk" FOREIGN KEY ("passport_id") REFERENCES "public"."passports"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
  ALTER TABLE "credentials" ADD CONSTRAINT "credentials_passport_id_passports_id_fk" FOREIGN KEY ("passport_id") REFERENCES "public"."passports"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
@@ -91,6 +123,8 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agents_passport_idx" ON "agents" USING btree ("passport_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "approval_requests_passport_idx" ON "approval_requests" USING btree ("passport_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "approval_requests_cred_agent_status_idx" ON "approval_requests" USING btree ("credential_id","agent_id","status");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_seq_idx" ON "audit_events" USING btree ("seq");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_created_idx" ON "audit_events" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_passport_idx" ON "audit_events" USING btree ("passport_id");--> statement-breakpoint

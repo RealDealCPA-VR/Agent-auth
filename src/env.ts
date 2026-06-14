@@ -37,6 +37,10 @@ const schema = z
     JWT_SECRETS_RETIRED: z.string().optional(),
     JWT_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(3600),
 
+    // How long an approval request (pending or granted) stays valid. A grant's
+    // validity is refreshed to this window at approval time.
+    APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+
     // Key provider for the KEK layer that wraps per-passport data keys.
     //   local — wrap with MASTER_KEY in-process (default)
     //   kms   — wrap via an external KMS (see KMS_* below); MASTER_KEY never holds the KEK

@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { generateDek, seal, open, type SealedBox, type WrappedKey } from '../crypto/envelope.js';
 import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
+import { requestOrConsume } from './approvals.js';
 
 /**
  * Vault operations. All DEK material is unwrapped transiently per-call and never
@@ -101,18 +102,20 @@ export type UseResult =
   | { status: 'not_yet_valid' }
   | { status: 'window_expired' }
   | { status: 'use_limit' }
-  | { status: 'approval_required' }
+  | { status: 'approval_pending'; requestId: string }
+  | { status: 'approval_denied' }
   | { status: 'decrypt_error' };
 
 /**
  * The agent reuse path: unseal a secret for use. Returns cleartext to the caller
  * only. Enforces per-credential policy (time window, max-uses, approval) before
- * unsealing. `approved` is set by the approval workflow for require-approval creds.
+ * unsealing. For require-approval creds, an approval request is materialized /
+ * consumed via the approval workflow (needs the calling agent's id).
  */
 export async function useCredential(
   passportId: string,
   credentialId: string,
-  opts: { approved?: boolean } = {},
+  opts: { agentId?: string } = {},
 ): Promise<UseResult> {
   const [cred] = await db
     .select()
@@ -127,7 +130,17 @@ export async function useCredential(
   if (cred.expiresAt && cred.expiresAt.getTime() <= now) return { status: 'expired' };
   if (cred.allowedFrom && cred.allowedFrom.getTime() > now) return { status: 'not_yet_valid' };
   if (cred.allowedUntil && cred.allowedUntil.getTime() <= now) return { status: 'window_expired' };
-  if (cred.requireApproval && !opts.approved) return { status: 'approval_required' };
+
+  // Human-in-the-loop gate. Resolve approval BEFORE reserving a use so a pending
+  // or denied attempt never consumes a maxUses slot. A live approval is consumed
+  // here (single-use); on approval we fall through to unseal.
+  if (cred.requireApproval) {
+    const decision = await requestOrConsume(passportId, credentialId, opts.agentId!);
+    if (decision.decision === 'pending')
+      return { status: 'approval_pending', requestId: decision.requestId };
+    if (decision.decision === 'denied') return { status: 'approval_denied' };
+    // decision === 'approved' -> proceed.
+  }
 
   // Reserve a use atomically so concurrent calls can't exceed maxUses.
   if (cred.maxUses !== null) {

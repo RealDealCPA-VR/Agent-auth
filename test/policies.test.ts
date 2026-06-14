@@ -71,11 +71,13 @@ describe('per-credential policies', () => {
     expect(res.json().error.code).toBe('window_expired');
   });
 
-  it('blocks use when approval is required and not granted (403 approval_required)', async () => {
+  it('queues a request when approval is required and not yet granted (202 pending)', async () => {
     const { apiKey, credId } = await setup({ requireApproval: true });
     const res = await use(apiKey, credId);
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe('approval_required');
+    expect(res.statusCode).toBe(202);
+    const body = res.json();
+    expect(body.status).toBe('pending');
+    expect(body.requestId).toBeTruthy();
   });
 
   it('allows unlimited use when no policy is set', async () => {

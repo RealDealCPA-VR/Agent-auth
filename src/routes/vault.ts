@@ -124,7 +124,7 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
 
       if (!hasScope(agent.scopes, 'vault:use')) return deny('missing scope: vault:use');
 
-      const result = await useCredential(agent.passportId, id);
+      const result = await useCredential(agent.passportId, id, { agentId: agent.agentId });
       if (result.status === 'not_found')
         return deny('not_found', 404, 'not_found', 'credential not found');
       if (result.status === 'expired')
@@ -135,8 +135,27 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         return deny('window_expired', 410, 'window_expired', 'credential usage window has ended');
       if (result.status === 'use_limit')
         return deny('use_limit', 429, 'use_limit_reached', 'credential use limit reached');
-      if (result.status === 'approval_required')
-        return deny('approval_required', 403, 'approval_required', 'use requires human approval');
+      if (result.status === 'approval_denied')
+        return deny('approval_denied', 403, 'approval_denied', 'use was denied by an owner');
+      if (result.status === 'approval_pending') {
+        // Not a hard failure: the request is queued for a human. Return 202 with
+        // the request id (not the error envelope), but still audit success:false
+        // so the trail records that the secret was withheld pending approval.
+        await audit({
+          action: 'credential.use',
+          success: false,
+          agentId: agent.agentId,
+          passportId: agent.passportId,
+          credentialId: id,
+          detail: { reason: 'approval_pending', requestId: result.requestId },
+          ip: req.ip,
+        });
+        return reply.code(202).send({
+          status: 'pending',
+          requestId: result.requestId,
+          message: 'awaiting approval',
+        });
+      }
       if (result.status === 'decrypt_error')
         return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
 
