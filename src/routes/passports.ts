@@ -49,6 +49,11 @@ const depositSchema = z.object({
   secret: z.string().min(1).max(8192),
   metadata: metadataSchema.optional(),
   expiresAt: z.coerce.date().optional(),
+  // Optional usage policy.
+  maxUses: z.number().int().positive().max(1_000_000).optional(),
+  allowedFrom: z.coerce.date().optional(),
+  allowedUntil: z.coerce.date().optional(),
+  requireApproval: z.boolean().optional(),
 });
 
 export async function passportRoutes(app: FastifyInstance): Promise<void> {

@@ -6,6 +6,7 @@ import {
   jsonb,
   boolean,
   bigserial,
+  integer,
   index,
   pgEnum,
 } from 'drizzle-orm/pg-core';
@@ -72,6 +73,12 @@ export const credentials = pgTable(
     metadata: jsonb('metadata').notNull().default({}),
     // Optional expiry; expired credentials are treated as unavailable.
     expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // --- Usage policy (all optional) ---
+    maxUses: integer('max_uses'), // null = unlimited
+    useCount: integer('use_count').notNull().default(0),
+    allowedFrom: timestamp('allowed_from', { withTimezone: true }), // usage window start
+    allowedUntil: timestamp('allowed_until', { withTimezone: true }), // usage window end
+    requireApproval: boolean('require_approval').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()

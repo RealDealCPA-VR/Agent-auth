@@ -129,6 +129,14 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         return deny('not_found', 404, 'not_found', 'credential not found');
       if (result.status === 'expired')
         return deny('expired', 410, 'expired', 'credential has expired');
+      if (result.status === 'not_yet_valid')
+        return deny('not_yet_valid', 403, 'not_yet_valid', 'credential is not yet usable');
+      if (result.status === 'window_expired')
+        return deny('window_expired', 410, 'window_expired', 'credential usage window has ended');
+      if (result.status === 'use_limit')
+        return deny('use_limit', 429, 'use_limit_reached', 'credential use limit reached');
+      if (result.status === 'approval_required')
+        return deny('approval_required', 403, 'approval_required', 'use requires human approval');
       if (result.status === 'decrypt_error')
         return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
 

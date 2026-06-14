@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS "credentials" (
 	"sealed" jsonb NOT NULL,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"expires_at" timestamp with time zone,
+	"max_uses" integer,
+	"use_count" integer DEFAULT 0 NOT NULL,
+	"allowed_from" timestamp with time zone,
+	"allowed_until" timestamp with time zone,
+	"require_approval" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

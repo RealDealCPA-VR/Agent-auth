@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { generateDek, seal, open, type SealedBox, type WrappedKey } from '../crypto/envelope.js';
 import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
@@ -42,6 +42,10 @@ export async function depositCredential(opts: {
   secret: string;
   metadata?: Record<string, unknown>;
   expiresAt?: Date | null;
+  maxUses?: number | null;
+  allowedFrom?: Date | null;
+  allowedUntil?: Date | null;
+  requireApproval?: boolean;
 }) {
   const dek = await loadDek(opts.passportId);
   if (!dek) return null;
@@ -60,6 +64,10 @@ export async function depositCredential(opts: {
         sealed,
         metadata: opts.metadata ?? {},
         expiresAt: opts.expiresAt ?? null,
+        maxUses: opts.maxUses ?? null,
+        allowedFrom: opts.allowedFrom ?? null,
+        allowedUntil: opts.allowedUntil ?? null,
+        requireApproval: opts.requireApproval ?? false,
       })
       .returning({
         id: schema.credentials.id,
@@ -90,10 +98,22 @@ export type UseResult =
     }
   | { status: 'not_found' }
   | { status: 'expired' }
+  | { status: 'not_yet_valid' }
+  | { status: 'window_expired' }
+  | { status: 'use_limit' }
+  | { status: 'approval_required' }
   | { status: 'decrypt_error' };
 
-/** The agent reuse path: unseal a secret for use. Returns cleartext to the caller only. */
-export async function useCredential(passportId: string, credentialId: string): Promise<UseResult> {
+/**
+ * The agent reuse path: unseal a secret for use. Returns cleartext to the caller
+ * only. Enforces per-credential policy (time window, max-uses, approval) before
+ * unsealing. `approved` is set by the approval workflow for require-approval creds.
+ */
+export async function useCredential(
+  passportId: string,
+  credentialId: string,
+  opts: { approved?: boolean } = {},
+): Promise<UseResult> {
   const [cred] = await db
     .select()
     .from(schema.credentials)
@@ -102,7 +122,34 @@ export async function useCredential(passportId: string, credentialId: string): P
     )
     .limit(1);
   if (!cred) return { status: 'not_found' };
-  if (cred.expiresAt && cred.expiresAt.getTime() <= Date.now()) return { status: 'expired' };
+
+  const now = Date.now();
+  if (cred.expiresAt && cred.expiresAt.getTime() <= now) return { status: 'expired' };
+  if (cred.allowedFrom && cred.allowedFrom.getTime() > now) return { status: 'not_yet_valid' };
+  if (cred.allowedUntil && cred.allowedUntil.getTime() <= now) return { status: 'window_expired' };
+  if (cred.requireApproval && !opts.approved) return { status: 'approval_required' };
+
+  // Reserve a use atomically so concurrent calls can't exceed maxUses.
+  if (cred.maxUses !== null) {
+    const reserved = await db
+      .update(schema.credentials)
+      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+      .where(
+        and(
+          eq(schema.credentials.id, credentialId),
+          eq(schema.credentials.passportId, passportId),
+          sql`${schema.credentials.useCount} < ${schema.credentials.maxUses}`,
+        ),
+      )
+      .returning({ useCount: schema.credentials.useCount });
+    if (reserved.length === 0) return { status: 'use_limit' };
+  } else {
+    // Track usage for unlimited credentials too (best-effort).
+    await db
+      .update(schema.credentials)
+      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+      .where(eq(schema.credentials.id, credentialId));
+  }
 
   const dek = await loadDek(passportId);
   if (!dek) return { status: 'not_found' };
