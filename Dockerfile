@@ -13,7 +13,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-COPY tsconfig.json drizzle.config.ts ./
+COPY tsconfig.json tsconfig.build.json drizzle.config.ts ./
 COPY src ./src
 COPY drizzle ./drizzle
 RUN pnpm build \

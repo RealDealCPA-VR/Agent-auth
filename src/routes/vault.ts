@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { and, count, desc, eq, like, notLike, or, type SQL } from 'drizzle-orm';
-import { db, schema } from '../db/index.js';
+import { schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
 import { hasScope, allowsTarget } from '../auth/agent.js';
 import { useCredential } from '../lib/vault.js';
 import { audit } from '../lib/audit.js';
-import { fail, paginationSchema, page } from '../lib/http.js';
+import { fail, paginationSchema, readPage } from '../lib/http.js';
 
 /**
  * Translate an agent's `target:` scopes into a SQL predicate equivalent to
@@ -72,23 +72,26 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         ? and(eq(schema.credentials.passportId, agent.passportId), tcond)
         : eq(schema.credentials.passportId, agent.passportId);
 
-      const rows = await db
-        .select({
-          id: schema.credentials.id,
-          target: schema.credentials.target,
-          label: schema.credentials.label,
-          type: schema.credentials.type,
-          metadata: schema.credentials.metadata,
-          expiresAt: schema.credentials.expiresAt,
-        })
-        .from(schema.credentials)
-        .where(where)
-        .orderBy(desc(schema.credentials.createdAt))
-        .limit(q.data.limit)
-        .offset(q.data.offset);
-
-      const [tc] = await db.select({ value: count() }).from(schema.credentials).where(where);
-      return page(rows, q.data, tc!.value);
+      return readPage(
+        q.data,
+        (tx) =>
+          tx
+            .select({
+              id: schema.credentials.id,
+              target: schema.credentials.target,
+              label: schema.credentials.label,
+              type: schema.credentials.type,
+              metadata: schema.credentials.metadata,
+              expiresAt: schema.credentials.expiresAt,
+            })
+            .from(schema.credentials)
+            .where(where)
+            .orderBy(desc(schema.credentials.createdAt))
+            .limit(q.data.limit)
+            .offset(q.data.offset),
+        async (tx) =>
+          (await tx.select({ value: count() }).from(schema.credentials).where(where))[0]!.value,
+      );
     },
   );
 

@@ -10,7 +10,9 @@ import { fail } from '../lib/http.js';
 import { env } from '../env.js';
 
 const credsSchema = z.object({
-  email: z.string().email().max(254),
+  // Email addresses are case-insensitive in practice; normalize to lowercase so
+  // case variants can't create duplicate accounts or bypass the login lookup.
+  email: z.string().email().max(254).toLowerCase(),
   password: z.string().min(10, 'password must be at least 10 characters').max(1024),
 });
 

@@ -3,7 +3,7 @@ import { desc, eq, or, inArray, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { verifyAuditChain } from '../lib/audit.js';
-import { fail, paginationSchema, page } from '../lib/http.js';
+import { fail, paginationSchema, readPage } from '../lib/http.js';
 
 export async function auditRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireHuman);
@@ -38,25 +38,29 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
             )
           : eq(schema.auditEvents.principalId, req.human!.sub);
 
-      const events = await db
-        .select({
-          id: schema.auditEvents.id,
-          seq: schema.auditEvents.seq,
-          action: schema.auditEvents.action,
-          success: schema.auditEvents.success,
-          passportId: schema.auditEvents.passportId,
-          agentId: schema.auditEvents.agentId,
-          credentialId: schema.auditEvents.credentialId,
-          detail: schema.auditEvents.detail,
-          createdAt: schema.auditEvents.createdAt,
-        })
-        .from(schema.auditEvents)
-        .where(scope)
-        .orderBy(desc(schema.auditEvents.seq))
-        .limit(q.data.limit)
-        .offset(q.data.offset);
-      const [tc] = await db.select({ value: count() }).from(schema.auditEvents).where(scope);
-      return page(events, q.data, tc!.value);
+      return readPage(
+        q.data,
+        (tx) =>
+          tx
+            .select({
+              id: schema.auditEvents.id,
+              seq: schema.auditEvents.seq,
+              action: schema.auditEvents.action,
+              success: schema.auditEvents.success,
+              passportId: schema.auditEvents.passportId,
+              agentId: schema.auditEvents.agentId,
+              credentialId: schema.auditEvents.credentialId,
+              detail: schema.auditEvents.detail,
+              createdAt: schema.auditEvents.createdAt,
+            })
+            .from(schema.auditEvents)
+            .where(scope)
+            .orderBy(desc(schema.auditEvents.seq))
+            .limit(q.data.limit)
+            .offset(q.data.offset),
+        async (tx) =>
+          (await tx.select({ value: count() }).from(schema.auditEvents).where(scope))[0]!.value,
+      );
     },
   );
 

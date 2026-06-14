@@ -6,7 +6,7 @@ import { requireHuman } from './guards.js';
 import { hashSecret, generateKeySecret, formatApiKey } from '../crypto/secrets.js';
 import { isValidScope } from '../auth/agent.js';
 import { audit } from '../lib/audit.js';
-import { fail, paginationSchema, page } from '../lib/http.js';
+import { fail, paginationSchema, readPage } from '../lib/http.js';
 
 const issueSchema = z.object({
   passportId: z.string().uuid(),
@@ -114,29 +114,36 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       const q = paginationSchema.safeParse(req.query);
       if (!q.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid pagination', q.error.flatten());
-      const rows = await db
-        .select({
-          id: schema.agents.id,
-          name: schema.agents.name,
-          passportId: schema.agents.passportId,
-          scopes: schema.agents.scopes,
-          active: schema.agents.active,
-          revokedAt: schema.agents.revokedAt,
-          expiresAt: schema.agents.expiresAt,
-          lastUsedAt: schema.agents.lastUsedAt,
-        })
-        .from(schema.agents)
-        .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
-        .where(eq(schema.passports.principalId, req.human!.sub))
-        .orderBy(desc(schema.agents.createdAt))
-        .limit(q.data.limit)
-        .offset(q.data.offset);
-      const [tc] = await db
-        .select({ value: count() })
-        .from(schema.agents)
-        .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
-        .where(eq(schema.passports.principalId, req.human!.sub));
-      return page(rows, q.data, tc!.value);
+      const where = eq(schema.passports.principalId, req.human!.sub);
+      return readPage(
+        q.data,
+        (tx) =>
+          tx
+            .select({
+              id: schema.agents.id,
+              name: schema.agents.name,
+              passportId: schema.agents.passportId,
+              scopes: schema.agents.scopes,
+              active: schema.agents.active,
+              revokedAt: schema.agents.revokedAt,
+              expiresAt: schema.agents.expiresAt,
+              lastUsedAt: schema.agents.lastUsedAt,
+            })
+            .from(schema.agents)
+            .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
+            .where(where)
+            .orderBy(desc(schema.agents.createdAt))
+            .limit(q.data.limit)
+            .offset(q.data.offset),
+        async (tx) =>
+          (
+            await tx
+              .select({ value: count() })
+              .from(schema.agents)
+              .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
+              .where(where)
+          )[0]!.value,
+      );
     },
   );
 

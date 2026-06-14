@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { db } from '../db/index.js';
 
 /**
  * One error envelope for the entire API:
@@ -53,4 +54,27 @@ export function page<T>(items: T[], p: Pagination, total: number): Page<T> {
     items,
     pagination: { limit: p.limit, offset: p.offset, total, returned: items.length },
   };
+}
+
+/** The transaction handle drizzle passes to a `db.transaction` callback. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Run a list query and its matching COUNT inside one read-only, repeatable-read
+ * transaction so `items` and `total` reflect the same snapshot — no SELECT/COUNT
+ * skew under concurrent writes — while still handling pages past the end.
+ */
+export function readPage<T>(
+  p: Pagination,
+  select: (tx: Tx) => Promise<T[]>,
+  countRows: (tx: Tx) => Promise<number>,
+): Promise<Page<T>> {
+  return db.transaction(
+    async (tx) => {
+      const items = await select(tx);
+      const total = await countRows(tx);
+      return page(items, p, total);
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
 }

@@ -5,7 +5,7 @@ import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { createPassport, depositCredential } from '../lib/vault.js';
 import { audit } from '../lib/audit.js';
-import { fail, paginationSchema, page } from '../lib/http.js';
+import { fail, paginationSchema, readPage } from '../lib/http.js';
 
 /** Confirm the authenticated human owns this passport, else 404 (no existence leak). */
 async function ownsPassport(
@@ -93,19 +93,23 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
       if (!q.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid pagination', q.error.flatten());
       const where = eq(schema.passports.principalId, req.human!.sub);
-      const rows = await db
-        .select({
-          id: schema.passports.id,
-          name: schema.passports.name,
-          createdAt: schema.passports.createdAt,
-        })
-        .from(schema.passports)
-        .where(where)
-        .orderBy(desc(schema.passports.createdAt))
-        .limit(q.data.limit)
-        .offset(q.data.offset);
-      const [tc] = await db.select({ value: count() }).from(schema.passports).where(where);
-      return page(rows, q.data, tc!.value);
+      return readPage(
+        q.data,
+        (tx) =>
+          tx
+            .select({
+              id: schema.passports.id,
+              name: schema.passports.name,
+              createdAt: schema.passports.createdAt,
+            })
+            .from(schema.passports)
+            .where(where)
+            .orderBy(desc(schema.passports.createdAt))
+            .limit(q.data.limit)
+            .offset(q.data.offset),
+        async (tx) =>
+          (await tx.select({ value: count() }).from(schema.passports).where(where))[0]!.value,
+      );
     },
   );
 
@@ -161,23 +165,27 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
       if (!q.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid pagination', q.error.flatten());
       const where = eq(schema.credentials.passportId, id);
-      const rows = await db
-        .select({
-          id: schema.credentials.id,
-          target: schema.credentials.target,
-          label: schema.credentials.label,
-          type: schema.credentials.type,
-          metadata: schema.credentials.metadata,
-          expiresAt: schema.credentials.expiresAt,
-          createdAt: schema.credentials.createdAt,
-        })
-        .from(schema.credentials)
-        .where(where)
-        .orderBy(desc(schema.credentials.createdAt))
-        .limit(q.data.limit)
-        .offset(q.data.offset);
-      const [tc] = await db.select({ value: count() }).from(schema.credentials).where(where);
-      return page(rows, q.data, tc!.value);
+      return readPage(
+        q.data,
+        (tx) =>
+          tx
+            .select({
+              id: schema.credentials.id,
+              target: schema.credentials.target,
+              label: schema.credentials.label,
+              type: schema.credentials.type,
+              metadata: schema.credentials.metadata,
+              expiresAt: schema.credentials.expiresAt,
+              createdAt: schema.credentials.createdAt,
+            })
+            .from(schema.credentials)
+            .where(where)
+            .orderBy(desc(schema.credentials.createdAt))
+            .limit(q.data.limit)
+            .offset(q.data.offset),
+        async (tx) =>
+          (await tx.select({ value: count() }).from(schema.credentials).where(where))[0]!.value,
+      );
     },
   );
 }

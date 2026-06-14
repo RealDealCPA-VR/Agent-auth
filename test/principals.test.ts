@@ -52,6 +52,32 @@ describe('principals & sessions', () => {
     expect(res.statusCode).toBe(409);
   });
 
+  it('treats emails case-insensitively (no duplicate, login any-case)', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/principals',
+      payload: { email: 'Case@Example.COM', password: PASSWORD },
+    });
+    expect(first.statusCode).toBe(201);
+
+    // A case-variant of the same email must not create a second account.
+    const dup = await app.inject({
+      method: 'POST',
+      url: '/v1/principals',
+      payload: { email: 'case@example.com', password: PASSWORD },
+    });
+    expect(dup.statusCode).toBe(409);
+
+    // Login works regardless of the case used.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      payload: { email: 'CASE@EXAMPLE.com', password: PASSWORD },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().token).toBeTruthy();
+  });
+
   it('logs in with valid credentials and returns a token + expiry', async () => {
     const p = await registerPrincipal(app);
     const res = await app.inject({
