@@ -249,6 +249,7 @@ export interface ApprovalRequest {
   passportId: string;
   status: ApprovalStatus;
   createdAt: string;
+  decidedAt: string | null;
   expiresAt: string | null;
 }
 
