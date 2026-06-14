@@ -201,6 +201,23 @@ export class AgentAuthError extends Error {
   get isUnavailable(): boolean {
     return this.status === 503;
   }
+  /** True for 202 — the credential requires human approval; see {@link ApprovalPendingError}. */
+  get isApprovalPending(): boolean {
+    return this.status === 202;
+  }
+}
+
+/**
+ * Thrown by {@link AgentAuthClient.useCredential} when the credential's policy
+ * requires human approval: the server has queued a request (HTTP 202) and the
+ * secret is withheld until an owner approves. Retry the call after approval.
+ */
+export class ApprovalPendingError extends AgentAuthError {
+  constructor(requestId: string | undefined, message = 'credential use is awaiting human approval') {
+    super({ status: 202, code: 'approval_pending', message, requestId });
+    this.name = 'ApprovalPendingError';
+    Object.setPrototypeOf(this, ApprovalPendingError.prototype);
+  }
 }
 
 // --- Shared low-level transport ---------------------------------------------
@@ -290,6 +307,12 @@ class Transport {
 
     if (!res.ok) {
       throw toError(res.status, parsed);
+    }
+    // 202 is only ever the approval-pending response (body { status, requestId }).
+    // Surface it as a typed error so callers can't mistake it for a real result.
+    if (res.status === 202) {
+      const body = (parsed ?? {}) as { requestId?: string; message?: string };
+      throw new ApprovalPendingError(body.requestId, body.message);
     }
     return parsed as T;
   }

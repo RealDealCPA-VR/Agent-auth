@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentAuthClient,
   AgentAuthError,
+  ApprovalPendingError,
   HumanClient,
   type Page,
   type UsedCredential,
@@ -136,6 +137,24 @@ describe('AgentAuthClient.useCredential by id (UUID)', () => {
 });
 
 // --- AgentAuthClient: target resolution -------------------------------------
+
+describe('AgentAuthClient.useCredential approval-pending (202)', () => {
+  it('throws a typed ApprovalPendingError instead of a bogus result', async () => {
+    const id = '33333333-3333-4333-8333-333333333333';
+    stubFetch([{ status: 202, body: { status: 'pending', requestId: 'req-9', message: 'awaiting approval' } }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    await expect(aa.useCredential(id)).rejects.toBeInstanceOf(ApprovalPendingError);
+    try {
+      await aa.useCredential(id);
+    } catch (e) {
+      const err = e as ApprovalPendingError;
+      expect(err.status).toBe(202);
+      expect(err.code).toBe('approval_pending');
+      expect(err.requestId).toBe('req-9');
+      expect(err.isApprovalPending).toBe(true);
+    }
+  });
+});
 
 describe('AgentAuthClient.useCredential by target', () => {
   it('resolves a non-UUID target via listing, then uses the matched id', async () => {

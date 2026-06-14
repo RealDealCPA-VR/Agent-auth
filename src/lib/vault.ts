@@ -97,6 +97,7 @@ export type UseResult =
       label: string;
       type: string;
       metadata: unknown;
+      expiresAt: Date | null;
       id: string;
     }
   | { status: 'not_found' }
@@ -275,6 +276,7 @@ export async function useCredential(
       label: cred.label,
       type: cred.type,
       metadata: cred.metadata,
+      expiresAt: cred.expiresAt,
       secret,
     };
   } catch {

@@ -39,47 +39,52 @@ export async function requestOrConsume(
   const now = Date.now();
   const nowDate = new Date(now);
 
-  const [latest] = await db
-    .select()
-    .from(schema.approvalRequests)
-    .where(
-      and(
-        eq(schema.approvalRequests.credentialId, credentialId),
-        eq(schema.approvalRequests.agentId, agentId),
-        gt(schema.approvalRequests.expiresAt, nowDate),
-      ),
-    )
-    .orderBy(desc(schema.approvalRequests.createdAt))
-    .limit(1);
+  // Read the candidate row and decide atomically: SELECT ... FOR UPDATE locks the
+  // row so a concurrent approve()/deny() can't change its status between our read
+  // and our decision (avoids returning stale 'pending' after a 'denied').
+  return db.transaction(async (tx) => {
+    const [latest] = await tx
+      .select()
+      .from(schema.approvalRequests)
+      .where(
+        and(
+          eq(schema.approvalRequests.credentialId, credentialId),
+          eq(schema.approvalRequests.agentId, agentId),
+          gt(schema.approvalRequests.expiresAt, nowDate),
+        ),
+      )
+      .orderBy(desc(schema.approvalRequests.createdAt))
+      .limit(1)
+      .for('update');
 
-  if (latest) {
-    if (latest.status === 'approved' && latest.consumedAt === null) {
-      // Single-use: spend the grant atomically. RETURNING is empty if a
-      // concurrent use already consumed it, in which case we re-request below.
-      const consumed = await db
-        .update(schema.approvalRequests)
-        .set({ consumedAt: nowDate })
-        .where(
-          and(
-            eq(schema.approvalRequests.id, latest.id),
-            isNull(schema.approvalRequests.consumedAt),
-          ),
-        )
-        .returning({ id: schema.approvalRequests.id });
-      if (consumed.length > 0) return { decision: 'approved' };
-    } else if (latest.status === 'denied') {
-      return { decision: 'denied' };
-    } else if (latest.status === 'pending') {
-      return { decision: 'pending', requestId: latest.id };
+    if (latest) {
+      if (latest.status === 'approved' && latest.consumedAt === null) {
+        // Single-use: spend the grant. Guarded so a concurrent use can't double-spend.
+        const consumed = await tx
+          .update(schema.approvalRequests)
+          .set({ consumedAt: nowDate })
+          .where(
+            and(
+              eq(schema.approvalRequests.id, latest.id),
+              isNull(schema.approvalRequests.consumedAt),
+            ),
+          )
+          .returning({ id: schema.approvalRequests.id });
+        if (consumed.length > 0) return { decision: 'approved' as const };
+      } else if (latest.status === 'denied') {
+        return { decision: 'denied' as const };
+      } else if (latest.status === 'pending') {
+        return { decision: 'pending' as const, requestId: latest.id };
+      }
+      // approved-but-already-consumed falls through to a fresh request.
     }
-    // approved-but-already-consumed falls through to a fresh request.
-  }
 
-  const [created] = await db
-    .insert(schema.approvalRequests)
-    .values({ passportId, credentialId, agentId, expiresAt: ttlFromNow(now) })
-    .returning({ id: schema.approvalRequests.id });
-  return { decision: 'pending', requestId: created!.id };
+    const [created] = await tx
+      .insert(schema.approvalRequests)
+      .values({ passportId, credentialId, agentId, expiresAt: ttlFromNow(now) })
+      .returning({ id: schema.approvalRequests.id });
+    return { decision: 'pending' as const, requestId: created!.id };
+  });
 }
 
 /** Pending, non-expired requests across the given (owned) passports. */

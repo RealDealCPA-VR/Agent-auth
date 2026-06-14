@@ -13,7 +13,7 @@ All API errors are raised as :class:`AgentAuthError`.
 from __future__ import annotations
 
 from .client import AgentAuthClient, HumanClient
-from .errors import AgentAuthError
+from .errors import AgentAuthError, ApprovalPendingError
 
 __version__ = "0.1.0"
 
@@ -21,5 +21,6 @@ __all__ = [
     "AgentAuthClient",
     "HumanClient",
     "AgentAuthError",
+    "ApprovalPendingError",
     "__version__",
 ]

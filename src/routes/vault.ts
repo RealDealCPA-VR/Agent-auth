@@ -188,6 +188,7 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         label: result.label,
         type: result.type,
         metadata: result.metadata,
+        expiresAt: result.expiresAt,
         secret: result.secret,
       });
     },

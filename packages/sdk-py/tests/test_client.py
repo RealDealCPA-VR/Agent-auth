@@ -442,3 +442,20 @@ def test_empty_body_success_returns_none():
     # revoke that returns 204 with no body should not blow up on .json()
     client = HumanClient(BASE, token="t", transport=make_transport(handler))
     assert client.revoke_agent("a1") is None
+
+
+def test_use_credential_202_raises_approval_pending():
+    from agentauth import ApprovalPendingError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The use endpoint returns 202 when the credential requires approval.
+        return httpx.Response(
+            202, json={"status": "pending", "requestId": "req_99", "message": "awaiting approval"}
+        )
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    with pytest.raises(ApprovalPendingError) as exc:
+        client.use_credential("33333333-3333-4333-8333-333333333333")
+    assert exc.value.status == 202
+    assert exc.value.code == "approval_pending"
+    assert exc.value.request_id == "req_99"

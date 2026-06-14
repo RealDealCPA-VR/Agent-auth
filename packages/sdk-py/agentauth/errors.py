@@ -45,3 +45,21 @@ class AgentAuthError(Exception):
             f"AgentAuthError(status={self.status!r}, code={self.code!r}, "
             f"message={self.message!r}, request_id={self.request_id!r})"
         )
+
+
+class ApprovalPendingError(AgentAuthError):
+    """Raised by ``use_credential`` when the credential requires human approval.
+
+    The server has queued an approval request (HTTP 202) and withholds the secret
+    until an owner approves. Retry the call after approval. ``request_id`` is the
+    id of the pending approval request.
+    """
+
+    def __init__(
+        self,
+        request_id: Optional[str] = None,
+        message: str = "credential use is awaiting human approval",
+    ) -> None:
+        super().__init__(
+            status=202, code="approval_pending", message=message, request_id=request_id
+        )

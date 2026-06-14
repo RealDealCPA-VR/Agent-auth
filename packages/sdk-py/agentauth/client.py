@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 
 import httpx
 
-from .errors import AgentAuthError
+from .errors import AgentAuthError, ApprovalPendingError
 
 # Public API base path. All resource endpoints live under /v1.
 _API_PREFIX = "/v1"
@@ -110,6 +110,15 @@ class _BaseClient:
             ) from exc
 
         if resp.is_success:
+            # 202 is only ever the approval-pending response (body has a
+            # requestId, not a real result) — surface it as a typed error so a
+            # caller can't mistake it for an unsealed credential.
+            if resp.status_code == 202:
+                body = resp.json() if resp.content else {}
+                raise ApprovalPendingError(
+                    request_id=body.get("requestId"),
+                    message=body.get("message", "credential use is awaiting human approval"),
+                )
             if not resp.content:
                 return None
             return resp.json()
