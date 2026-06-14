@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentauth"
+version = "0.1.0"
+description = "Official Python SDK for AgentAuth — the credential vault and identity broker for AI agents."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "AgentAuth" }]
+keywords = ["agentauth", "credentials", "vault", "ai-agents", "secrets"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = ["httpx>=0.24,<1"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "respx>=0.20", "pytest-asyncio>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/agentauth/agentauth"
+Source = "https://github.com/agentauth/agentauth/tree/main/packages/sdk-py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentauth"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"agentauth/py.typed" = "agentauth/py.typed"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

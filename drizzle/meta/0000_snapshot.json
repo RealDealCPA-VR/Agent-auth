@@ -1,5 +1,5 @@
 {
-  "id": "de9c465c-7d95-4d2c-a5af-38a643f54fe7",
+  "id": "eae40f89-6c03-4c82-be79-8c7552c22ef2",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -186,6 +186,12 @@
         },
         "hash": {
           "name": "hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hash_key_id": {
+          "name": "hash_key_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true

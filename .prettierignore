@@ -3,3 +3,5 @@ node_modules
 drizzle
 coverage
 pnpm-lock.yaml
+packages
+web

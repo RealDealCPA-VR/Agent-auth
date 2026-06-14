@@ -11,8 +11,19 @@ import { db, schema, pingDb } from '../db/index.js';
  * Each token has a unique `jti` so it can be revoked before expiry (logout).
  */
 
-// Use the raw decoded key bytes directly — no lossy base64->binary->utf8 round-trip.
-const secret = new Uint8Array(Buffer.from(env.JWT_SECRET, 'base64'));
+// JWT signing keyring: active key (id JWT_KEY_ID) plus any retired keys, so the
+// signing secret can rotate while tokens signed before the roll still verify
+// until they expire. Use the raw decoded key bytes directly.
+const jwtKeys = new Map<string, Uint8Array>();
+jwtKeys.set(env.JWT_KEY_ID, new Uint8Array(Buffer.from(env.JWT_SECRET, 'base64')));
+if (env.JWT_SECRETS_RETIRED) {
+  const retired = JSON.parse(env.JWT_SECRETS_RETIRED) as Record<string, string>;
+  for (const [kid, b64] of Object.entries(retired)) {
+    if (!jwtKeys.has(kid)) jwtKeys.set(kid, new Uint8Array(Buffer.from(b64, 'base64')));
+  }
+}
+const activeKid = env.JWT_KEY_ID;
+const activeKey = jwtKeys.get(activeKid)!;
 
 const ISS = 'agentauth';
 const AUD = 'agentauth:human';
@@ -35,14 +46,14 @@ export async function issueSession(input: { sub: string; email: string }): Promi
   const jti = randomUUID();
   const expiresAt = new Date(Date.now() + env.JWT_TTL_SECONDS * 1000);
   const token = await new SignJWT({ email: input.email })
-    .setProtectedHeader({ alg: ALG })
+    .setProtectedHeader({ alg: ALG, kid: activeKid })
     .setSubject(input.sub)
     .setJti(jti)
     .setIssuer(ISS)
     .setAudience(AUD)
     .setIssuedAt()
     .setExpirationTime(`${env.JWT_TTL_SECONDS}s`)
-    .sign(secret);
+    .sign(activeKey);
   return { token, jti, expiresAt };
 }
 
@@ -53,11 +64,17 @@ export async function issueSession(input: { sub: string; email: string }): Promi
 export async function verifySession(token: string): Promise<HumanClaims | null> {
   let claims: HumanClaims;
   try {
-    const { payload } = await jwtVerify(token, secret, {
-      issuer: ISS,
-      audience: AUD,
-      algorithms: [ALG],
-    });
+    const { payload } = await jwtVerify(
+      token,
+      // Resolve the verification key from the token's kid (supports rotation).
+      // An unknown/missing kid throws, which is caught below as a rejection.
+      (header) => {
+        const key = header.kid ? jwtKeys.get(header.kid) : undefined;
+        if (!key) throw new Error('unknown kid');
+        return key;
+      },
+      { issuer: ISS, audience: AUD, algorithms: [ALG] },
+    );
     if (
       typeof payload.sub !== 'string' ||
       typeof payload.email !== 'string' ||

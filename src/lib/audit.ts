@@ -19,10 +19,25 @@ export interface AuditInput {
 // A transaction-like executor: either the root db or a tx handle.
 type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
 
-// Domain-separated key derived from the master key — never reused for encryption.
-const AUDIT_KEY = createHmac('sha256', Buffer.from(env.MASTER_KEY, 'base64'))
-  .update('agentauth-audit-chain-v1')
-  .digest();
+// Audit HMAC keyring (supports rotation). The active key is AUDIT_HMAC_SECRET, or
+// — for back-compat — derived from MASTER_KEY. Retired keys verify older rows.
+function deriveActiveAuditKey(): Buffer {
+  if (env.AUDIT_HMAC_SECRET) return Buffer.from(env.AUDIT_HMAC_SECRET, 'base64');
+  return createHmac('sha256', Buffer.from(env.MASTER_KEY, 'base64'))
+    .update('agentauth-audit-chain-v1')
+    .digest();
+}
+
+const AUDIT_KEY_ID = env.AUDIT_KEY_ID;
+const auditKeys = new Map<string, Buffer>();
+auditKeys.set(AUDIT_KEY_ID, deriveActiveAuditKey());
+if (env.AUDIT_KEYS_RETIRED) {
+  const retired = JSON.parse(env.AUDIT_KEYS_RETIRED) as Record<string, string>;
+  for (const [kid, b64] of Object.entries(retired)) {
+    if (!auditKeys.has(kid)) auditKeys.set(kid, Buffer.from(b64, 'base64'));
+  }
+}
+const AUDIT_KEY = auditKeys.get(AUDIT_KEY_ID)!;
 
 // Serializes audit appends so the hash chain stays linear under concurrency.
 const AUDIT_LOCK = 4242421;
@@ -56,8 +71,8 @@ function canonical(i: AuditInput, createdAtIso: string, prevHash: string | null)
   ]);
 }
 
-function chainHash(payload: string): string {
-  return createHmac('sha256', AUDIT_KEY).update(payload).digest('hex');
+function chainHash(payload: string, key: Buffer): string {
+  return createHmac('sha256', key).update(payload).digest('hex');
 }
 
 async function appendWith(exec: Executor, input: AuditInput): Promise<void> {
@@ -70,7 +85,7 @@ async function appendWith(exec: Executor, input: AuditInput): Promise<void> {
     .limit(1);
   const prevHash = last?.hash ?? null;
   const createdAt = new Date();
-  const hash = chainHash(canonical(input, createdAt.toISOString(), prevHash));
+  const hash = chainHash(canonical(input, createdAt.toISOString(), prevHash), AUDIT_KEY);
 
   await exec.insert(schema.auditEvents).values({
     action: input.action,
@@ -83,6 +98,7 @@ async function appendWith(exec: Executor, input: AuditInput): Promise<void> {
     ip: input.ip ?? null,
     prevHash,
     hash,
+    hashKeyId: AUDIT_KEY_ID,
     createdAt,
   });
 }
@@ -125,6 +141,8 @@ export async function verifyAuditChain(): Promise<ChainVerification> {
 
   let prevHash: string | null = null;
   for (const r of rows) {
+    const key = auditKeys.get(r.hashKeyId);
+    if (!key) return { ok: false, count: rows.length, brokenAtSeq: r.seq };
     const expected = chainHash(
       canonical(
         {
@@ -140,6 +158,7 @@ export async function verifyAuditChain(): Promise<ChainVerification> {
         new Date(r.createdAt).toISOString(),
         prevHash,
       ),
+      key,
     );
     const a = Buffer.from(expected);
     const b = Buffer.from(r.hash);

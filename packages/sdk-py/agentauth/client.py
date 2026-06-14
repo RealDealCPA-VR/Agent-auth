@@ -1,0 +1,432 @@
+"""Synchronous HTTP clients for the AgentAuth API.
+
+Two clients are provided, mirroring the two authentication surfaces of the API:
+
+* :class:`HumanClient` — authenticated with a human session JWT (Bearer token).
+  Used for the management plane: registering principals, opening passports,
+  depositing credentials, issuing/revoking agents, and reading the audit log.
+
+* :class:`AgentAuthClient` — authenticated with an agent API key
+  (``aa_<uuid>.<secret>``). Used for the data plane: an agent discovering and
+  using the credentials it has been granted.
+
+Both are thin wrappers over :mod:`httpx`. Every non-2xx response is translated
+into an :class:`~agentauth.errors.AgentAuthError`. The clients are usable as
+context managers so the underlying connection pool is closed deterministically.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Mapping, Optional, Union
+
+import httpx
+
+from .errors import AgentAuthError
+
+# Public API base path. All resource endpoints live under /v1.
+_API_PREFIX = "/v1"
+
+# Default per-request timeout (seconds). The vault deliberately fails closed and
+# can return 503 quickly, so a modest default is fine; callers may override.
+_DEFAULT_TIMEOUT = 30.0
+
+
+JSON = Dict[str, Any]
+Page = Dict[str, Any]
+
+
+class _BaseClient:
+    """Shared transport logic for the human and agent clients.
+
+    Handles base-url normalisation, the Authorization header, JSON
+    (de)serialisation, and the single error-envelope -> exception mapping.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        auth_header: Optional[str] = None,
+        timeout: float = _DEFAULT_TIMEOUT,
+        transport: Optional[httpx.BaseTransport] = None,
+        http_client: Optional[httpx.Client] = None,
+    ) -> None:
+        # Strip a trailing slash so we can concatenate paths unambiguously.
+        self._base_url = base_url.rstrip("/")
+        if http_client is not None:
+            # Caller-supplied client (e.g. preconfigured proxies); we don't own it.
+            self._http = http_client
+            self._owns_http = False
+        else:
+            headers: Dict[str, str] = {"accept": "application/json"}
+            if auth_header:
+                headers["authorization"] = auth_header
+            self._http = httpx.Client(
+                base_url=self._base_url,
+                headers=headers,
+                timeout=timeout,
+                transport=transport,
+            )
+            self._owns_http = True
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def close(self) -> None:
+        """Close the underlying HTTP connection pool (if we own it)."""
+        if self._owns_http:
+            self._http.close()
+
+    def __enter__(self):  # noqa: D401 - context manager protocol
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    # -- low-level request -------------------------------------------------
+
+    def _set_auth(self, auth_header: str) -> None:
+        """Update the Authorization header in place (used after login)."""
+        self._http.headers["authorization"] = auth_header
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[Mapping[str, Any]] = None,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        """Perform a request and return decoded JSON, or raise AgentAuthError."""
+        url = f"{_API_PREFIX}{path}"
+        try:
+            resp = self._http.request(method, url, json=json, params=params)
+        except httpx.HTTPError as exc:  # network/timeout/transport failures
+            # Surface transport failures through the same exception type so
+            # callers have one thing to catch. Status 0 == "never reached".
+            raise AgentAuthError(
+                status=0,
+                code="network_error",
+                message=str(exc) or "request failed before a response was received",
+            ) from exc
+
+        if resp.is_success:
+            if not resp.content:
+                return None
+            return resp.json()
+
+        raise self._to_error(resp)
+
+    @staticmethod
+    def _to_error(resp: httpx.Response) -> AgentAuthError:
+        """Translate a non-2xx response into a structured AgentAuthError.
+
+        The server's canonical shape is ``{"error": {...}}`` but we degrade
+        gracefully for proxies / unexpected bodies (e.g. an HTML 502).
+        """
+        code = "http_error"
+        message = resp.reason_phrase or f"HTTP {resp.status_code}"
+        request_id: Optional[str] = None
+        details: Any = None
+
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+
+        if isinstance(body, dict):
+            envelope = body.get("error")
+            if isinstance(envelope, dict):
+                code = envelope.get("code", code)
+                message = envelope.get("message", message)
+                request_id = envelope.get("requestId")
+                details = envelope.get("details")
+
+        # Fall back to the standard header if the envelope omitted the id.
+        if request_id is None:
+            request_id = resp.headers.get("x-request-id")
+
+        return AgentAuthError(
+            status=resp.status_code,
+            code=code,
+            message=message,
+            request_id=request_id,
+            details=details,
+        )
+
+
+class HumanClient(_BaseClient):
+    """Management-plane client authenticated with a human session JWT.
+
+    Example::
+
+        client = HumanClient("https://api.agentauth.dev")
+        client.login(email="me@example.com", password="...")
+        passport = client.create_passport("work")
+        client.deposit_credential(passport["id"], target="github.com",
+                                   label="GH", type="api_key", secret="ghp_x")
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        token: Optional[str] = None,
+        *,
+        timeout: float = _DEFAULT_TIMEOUT,
+        transport: Optional[httpx.BaseTransport] = None,
+        http_client: Optional[httpx.Client] = None,
+    ) -> None:
+        super().__init__(
+            base_url,
+            auth_header=f"Bearer {token}" if token else None,
+            timeout=timeout,
+            transport=transport,
+            http_client=http_client,
+        )
+        self.token = token
+
+    # -- auth --------------------------------------------------------------
+
+    def register(self, email: str, password: str) -> JSON:
+        """Create a new principal (human account). Returns ``{id, email}``.
+
+        Does not log in; call :meth:`login` afterwards to obtain a token.
+        """
+        return self._request(
+            "POST", "/principals", json={"email": email, "password": password}
+        )
+
+    def login(self, email: str, password: str) -> JSON:
+        """Exchange credentials for a session token and store it on the client.
+
+        Returns the raw login payload ``{token, tokenType, expiresAt}`` and
+        sets the Authorization header so subsequent calls are authenticated.
+        """
+        data = self._request(
+            "POST", "/auth/login", json={"email": email, "password": password}
+        )
+        self.token = data["token"]
+        token_type = data.get("tokenType") or "Bearer"
+        self._set_auth(f"{token_type} {self.token}")
+        return data
+
+    def logout(self) -> JSON:
+        """Revoke the current session (adds the jti to the denylist)."""
+        data = self._request("POST", "/auth/logout")
+        # Clear local auth state; the token is now dead server-side.
+        self.token = None
+        self._http.headers.pop("authorization", None)
+        return data
+
+    # -- passports ---------------------------------------------------------
+
+    def create_passport(self, name: str) -> JSON:
+        """Open a new passport. Returns ``{id, name, createdAt}``."""
+        return self._request("POST", "/passports", json={"name": name})
+
+    def list_passports(self, *, limit: Optional[int] = None,
+                       offset: Optional[int] = None) -> Page:
+        """List passports as a page ``{items, pagination}``."""
+        return self._request("GET", "/passports", params=_page_params(limit, offset))
+
+    # -- credentials (deposit) --------------------------------------------
+
+    def deposit_credential(
+        self,
+        passport_id: str,
+        *,
+        target: str,
+        label: str,
+        type: str,  # noqa: A002 - mirrors the API field name
+        secret: str,
+        metadata: Optional[Mapping[str, Any]] = None,
+        expires_at: Optional[str] = None,
+    ) -> JSON:
+        """Seal a credential into a passport.
+
+        ``type`` must be one of ``password|oauth_token|cookie|api_key``.
+        ``expires_at`` is an ISO-8601 timestamp string if provided.
+        Returns the credential metadata (never the secret).
+        """
+        body: Dict[str, Any] = {
+            "target": target,
+            "label": label,
+            "type": type,
+            "secret": secret,
+        }
+        if metadata is not None:
+            body["metadata"] = metadata
+        if expires_at is not None:
+            body["expiresAt"] = expires_at
+        return self._request(
+            "POST", f"/passports/{passport_id}/credentials", json=body
+        )
+
+    def list_credentials(self, passport_id: str, *, limit: Optional[int] = None,
+                         offset: Optional[int] = None) -> Page:
+        """List the credentials in a passport (metadata only, no secrets)."""
+        return self._request(
+            "GET",
+            f"/passports/{passport_id}/credentials",
+            params=_page_params(limit, offset),
+        )
+
+    # -- agents ------------------------------------------------------------
+
+    def issue_agent(
+        self,
+        *,
+        passport_id: str,
+        name: str,
+        scopes: List[str],
+        expires_at: Optional[str] = None,
+    ) -> JSON:
+        """Mint a scoped agent API key bound to a passport.
+
+        Returns ``{id, name, scopes, apiKey, warning}``. The ``apiKey`` is shown
+        exactly once — capture it from the return value.
+        """
+        body: Dict[str, Any] = {
+            "passportId": passport_id,
+            "name": name,
+            "scopes": list(scopes),
+        }
+        if expires_at is not None:
+            body["expiresAt"] = expires_at
+        return self._request("POST", "/agents", json=body)
+
+    def list_agents(self, *, limit: Optional[int] = None,
+                    offset: Optional[int] = None) -> Page:
+        """List agents bound to your principal."""
+        return self._request("GET", "/agents", params=_page_params(limit, offset))
+
+    def revoke_agent(self, agent_id: str) -> JSON:
+        """Revoke an agent immediately (fail-closed). Returns ``{id, revoked}``."""
+        return self._request("POST", f"/agents/{agent_id}/revoke")
+
+    # -- audit -------------------------------------------------------------
+
+    def list_audit(self, *, limit: Optional[int] = None,
+                   offset: Optional[int] = None) -> Page:
+        """Read the audit event log as a page."""
+        return self._request("GET", "/audit", params=_page_params(limit, offset))
+
+    def verify_audit(self) -> JSON:
+        """Verify the audit hash-chain. Returns ``{ok, count, brokenAtSeq}``."""
+        return self._request("GET", "/audit/verify")
+
+
+class AgentAuthClient(_BaseClient):
+    """Data-plane client authenticated with an agent API key.
+
+    This is the one-liner the agent uses at runtime::
+
+        client = AgentAuthClient("https://api.agentauth.dev", "aa_...secret")
+        cred = client.use_credential("github.com")
+        token = cred["secret"]
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        timeout: float = _DEFAULT_TIMEOUT,
+        transport: Optional[httpx.BaseTransport] = None,
+        http_client: Optional[httpx.Client] = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("api_key is required for AgentAuthClient")
+        super().__init__(
+            base_url,
+            auth_header=f"Bearer {api_key}",
+            timeout=timeout,
+            transport=transport,
+            http_client=http_client,
+        )
+        self.api_key = api_key
+
+    def list_credentials(self, *, limit: Optional[int] = None,
+                         offset: Optional[int] = None) -> Page:
+        """Discover the credentials this agent is allowed to see (no secrets)."""
+        return self._request(
+            "GET", "/vault/credentials", params=_page_params(limit, offset)
+        )
+
+    def use_credential(self, id_or_target: str, *, limit: int = 100) -> JSON:
+        """Unseal and return a credential, by id **or** by target host.
+
+        If ``id_or_target`` matches a credential id exactly, that credential is
+        used directly. Otherwise it is treated as a ``target`` and resolved
+        against the agent's visible credentials (the data plane has no
+        target-lookup endpoint, so resolution happens client-side).
+
+        Returns ``{id, target, label, type, metadata, secret}``.
+
+        Raises:
+            AgentAuthError: ``not_found`` (404) if no credential matches the
+                target; or whatever the server returns for an id-based use.
+        """
+        # Fast path: assume it's an id and try the use endpoint directly.
+        # A 404 here means "no such id" -> fall back to target resolution.
+        try:
+            return self._use_by_id(id_or_target)
+        except AgentAuthError as exc:
+            if exc.status != 404:
+                raise
+            # Not an id; resolve it as a target below.
+
+        cred_id = self._resolve_target(id_or_target, limit=limit)
+        if cred_id is None:
+            raise AgentAuthError(
+                status=404,
+                code="not_found",
+                message=f"no credential found for target {id_or_target!r}",
+            )
+        return self._use_by_id(cred_id)
+
+    # -- internals ---------------------------------------------------------
+
+    def _use_by_id(self, credential_id: str) -> JSON:
+        return self._request(
+            "POST", f"/vault/credentials/{credential_id}/use"
+        )
+
+    def _resolve_target(self, target: str, *, limit: int) -> Optional[str]:
+        """Return the id of the first visible credential matching ``target``.
+
+        Pages through the agent's credential listing. Most agents are scoped to
+        a handful of targets, so this is cheap in practice.
+        """
+        offset = 0
+        while True:
+            page = self.list_credentials(limit=limit, offset=offset)
+            items: List[JSON] = page.get("items", [])
+            for item in items:
+                if item.get("target") == target:
+                    return item.get("id")
+            pagination = page.get("pagination", {})
+            returned = pagination.get("returned", len(items))
+            total = pagination.get("total")
+            offset += returned
+            # Stop when we've drained the result set or made no progress.
+            if returned == 0:
+                return None
+            if total is not None and offset >= total:
+                return None
+
+
+def _page_params(limit: Optional[int], offset: Optional[int]) -> Dict[str, Any]:
+    """Build a params dict, omitting unset pagination values."""
+    params: Dict[str, Any] = {}
+    if limit is not None:
+        params["limit"] = limit
+    if offset is not None:
+        params["offset"] = offset
+    return params
+
+
+__all__ = [
+    "AgentAuthClient",
+    "HumanClient",
+    "AgentAuthError",
+]

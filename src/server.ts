@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance, type FastifyError } from 'fastify';
 import sensible from '@fastify/sensible';
 import helmet from '@fastify/helmet';
@@ -17,7 +18,15 @@ import { vaultRoutes } from './routes/vault.js';
 import { auditRoutes } from './routes/audit.js';
 
 export async function buildServer(): Promise<FastifyInstance> {
+  // Terminate TLS directly when a cert+key are configured; otherwise serve HTTP
+  // and let a reverse proxy / load balancer terminate TLS.
+  const https =
+    env.HTTPS_CERT && env.HTTPS_KEY
+      ? { key: readFileSync(env.HTTPS_KEY), cert: readFileSync(env.HTTPS_CERT) }
+      : null;
+
   const app = Fastify({
+    ...(https ? { https } : {}),
     bodyLimit: env.BODY_LIMIT_BYTES,
     trustProxy: env.isProd,
     // Accept an inbound correlation id or generate one; it appears in every log

@@ -1,14 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
-import {
-  generateDek,
-  wrapDek,
-  unwrapDek,
-  seal,
-  open,
-  type SealedBox,
-  type WrappedKey,
-} from '../crypto/envelope.js';
+import { generateDek, seal, open, type SealedBox, type WrappedKey } from '../crypto/envelope.js';
+import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
 
 /**
  * Vault operations. All DEK material is unwrapped transiently per-call and never
@@ -17,7 +10,7 @@ import {
 
 export async function createPassport(principalId: string, name: string) {
   const dek = generateDek();
-  const wrapped = wrapDek(dek);
+  const wrapped = await wrapDek(dek);
   dek.fill(0); // scrub after wrapping
   const [row] = await db
     .insert(schema.passports)
@@ -37,7 +30,7 @@ async function loadDek(passportId: string): Promise<Buffer | null> {
     .where(eq(schema.passports.id, passportId))
     .limit(1);
   if (!p) return null;
-  return unwrapDek(p.wrappedDek as WrappedKey);
+  return await unwrapDek(p.wrappedDek as WrappedKey);
 }
 
 /** The "log in once manually" write path: seal a secret into the passport. */

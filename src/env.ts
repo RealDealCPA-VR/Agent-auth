@@ -31,12 +31,43 @@ const schema = z
     MASTER_KEYS_RETIRED: z.string().optional(),
 
     JWT_SECRET: base64Exact('JWT_SECRET', 32),
+    JWT_KEY_ID: z.string().min(1).default('j1'),
+    // Optional retired JWT keys for rotation, as JSON {"<kid>":"<base64-32B>"}, so
+    // tokens signed before a roll still verify until they expire.
+    JWT_SECRETS_RETIRED: z.string().optional(),
     JWT_TTL_SECONDS: z.coerce.number().int().positive().max(86400).default(3600),
+
+    // Key provider for the KEK layer that wraps per-passport data keys.
+    //   local — wrap with MASTER_KEY in-process (default)
+    //   kms   — wrap via an external KMS (see KMS_* below); MASTER_KEY never holds the KEK
+    KEY_PROVIDER: z.enum(['local', 'kms']).default('local'),
+    KMS_KEY_ID: z.string().optional(), // KMS key id/arn/alias for the active KEK
+    KMS_REGION: z.string().optional(),
+    KMS_ENDPOINT: z.string().optional(), // override for LocalStack / tests
+
+    // Audit hash-chain signing key. If AUDIT_HMAC_SECRET is unset, the active key
+    // is derived from MASTER_KEY (back-compat). AUDIT_KEY_ID labels the active key
+    // on each row; AUDIT_KEYS_RETIRED holds prior raw keys so the chain verifies
+    // across rotations.
+    AUDIT_HMAC_SECRET: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v || Buffer.from(v, 'base64').length === 32,
+        'AUDIT_HMAC_SECRET must be 32 bytes base64',
+      ),
+    AUDIT_KEY_ID: z.string().min(1).default('a1'),
+    AUDIT_KEYS_RETIRED: z.string().optional(),
 
     // Postgres TLS. In production we default to requiring TLS; local docker can
     // disable it. Accept a CA bundle path for verify-full setups.
     DATABASE_SSL: z.enum(['disable', 'require', 'verify']).optional(),
     DATABASE_SSL_CA: z.string().optional(),
+
+    // Optional native HTTPS. Provide BOTH a cert and key (PEM file paths) to have
+    // the server terminate TLS directly; otherwise terminate at a reverse proxy.
+    HTTPS_CERT: z.string().optional(),
+    HTTPS_KEY: z.string().optional(),
 
     // Comma-separated CORS allowlist. Empty => no cross-origin browser access.
     CORS_ORIGINS: z.string().default(''),
@@ -60,36 +91,43 @@ const schema = z
   // Validate compound/dependent fields here so a bad value fails fast with the
   // clean env error message instead of throwing at module-import time.
   .superRefine((e, ctx) => {
-    if (e.MASTER_KEYS_RETIRED) {
+    const validateRetired = (
+      raw: string | undefined,
+      field: 'MASTER_KEYS_RETIRED' | 'JWT_SECRETS_RETIRED' | 'AUDIT_KEYS_RETIRED',
+    ) => {
+      if (!raw) return;
       let retired: unknown;
       try {
-        retired = JSON.parse(e.MASTER_KEYS_RETIRED);
+        retired = JSON.parse(raw);
       } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['MASTER_KEYS_RETIRED'],
+          path: [field],
           message: 'must be valid JSON: {"<kid>":"<base64-32B>"}',
         });
-        retired = undefined;
+        return;
       }
-      if (retired && (typeof retired !== 'object' || Array.isArray(retired))) {
+      if (typeof retired !== 'object' || retired === null || Array.isArray(retired)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['MASTER_KEYS_RETIRED'],
+          path: [field],
           message: 'must be a JSON object of kid -> base64 key',
         });
-      } else if (retired) {
-        for (const [kid, val] of Object.entries(retired as Record<string, unknown>)) {
-          if (typeof val !== 'string' || Buffer.from(val, 'base64').length !== 32) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['MASTER_KEYS_RETIRED'],
-              message: `retired key "${kid}" must decode to exactly 32 bytes of base64`,
-            });
-          }
+        return;
+      }
+      for (const [kid, val] of Object.entries(retired as Record<string, unknown>)) {
+        if (typeof val !== 'string' || Buffer.from(val, 'base64').length !== 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: `retired key "${kid}" must decode to exactly 32 bytes of base64`,
+          });
         }
       }
-    }
+    };
+    validateRetired(e.MASTER_KEYS_RETIRED, 'MASTER_KEYS_RETIRED');
+    validateRetired(e.JWT_SECRETS_RETIRED, 'JWT_SECRETS_RETIRED');
+    validateRetired(e.AUDIT_KEYS_RETIRED, 'AUDIT_KEYS_RETIRED');
 
     const sslMode = e.DATABASE_SSL ?? (e.NODE_ENV === 'production' ? 'require' : 'disable');
     if (sslMode === 'verify' && e.DATABASE_SSL_CA) {
@@ -101,6 +139,28 @@ const schema = z
           path: ['DATABASE_SSL_CA'],
           message: 'CA file not found or not readable',
         });
+      }
+    }
+
+    // Native HTTPS requires both cert and key, and both must be readable.
+    if (Boolean(e.HTTPS_CERT) !== Boolean(e.HTTPS_KEY)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['HTTPS_CERT'],
+        message: 'provide BOTH HTTPS_CERT and HTTPS_KEY, or neither',
+      });
+    }
+    for (const k of ['HTTPS_CERT', 'HTTPS_KEY'] as const) {
+      if (e[k]) {
+        try {
+          accessSync(e[k]!, constants.R_OK);
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [k],
+            message: `${k} file not readable`,
+          });
+        }
       }
     }
   })

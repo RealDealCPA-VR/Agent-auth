@@ -30,21 +30,24 @@ describe('envelope encryption', () => {
   });
 
   it('wraps and unwraps a DEK under the master key', async () => {
-    const { generateDek, wrapDek, unwrapDek } = await import('../src/crypto/envelope.js');
+    const { generateDek } = await import('../src/crypto/envelope.js');
+    const { wrapDek, unwrapDek } = await import('../src/crypto/keyprovider/index.js');
     const dek = generateDek();
-    const back = unwrapDek(wrapDek(dek));
+    const back = await unwrapDek(await wrapDek(dek));
     expect(back.equals(dek)).toBe(true);
   });
 
   it('records the active key id on wrapped DEKs', async () => {
-    const { generateDek, wrapDek, activeKeyId } = await import('../src/crypto/envelope.js');
-    const wrapped = wrapDek(generateDek());
+    const { generateDek } = await import('../src/crypto/envelope.js');
+    const { wrapDek, activeKeyId } = await import('../src/crypto/keyprovider/index.js');
+    const wrapped = await wrapDek(generateDek());
     expect(wrapped.kid).toBe(activeKeyId);
   });
 
   it('rotateWrappedDek is a no-op when already on the active key', async () => {
-    const { generateDek, wrapDek, rotateWrappedDek } = await import('../src/crypto/envelope.js');
-    expect(rotateWrappedDek(wrapDek(generateDek()))).toBeNull();
+    const { generateDek } = await import('../src/crypto/envelope.js');
+    const { wrapDek, rotateWrappedDek } = await import('../src/crypto/keyprovider/index.js');
+    expect(await rotateWrappedDek(await wrapDek(generateDek()))).toBeNull();
   });
 
   it('rejects an unknown format version', async () => {

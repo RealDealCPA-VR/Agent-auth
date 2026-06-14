@@ -1,0 +1,325 @@
+/* AgentAuth admin UI — lightweight dark theme (crimson / black). */
+
+:root {
+  --bg: #0a0a0c;
+  --bg-elev: #141418;
+  --bg-elev-2: #1c1c22;
+  --border: #2a2a32;
+  --text: #ececf1;
+  --text-dim: #9a9aa6;
+  --crimson: #dc143c;
+  --crimson-hi: #ff2d55;
+  --crimson-dim: #7a0c22;
+  --ok: #2ecc71;
+  --warn: #f1c40f;
+  --err: #ff4d4f;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--crimson-hi);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* Layout shell ---------------------------------------------------------- */
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #121215, #0c0c0e);
+}
+
+.brand {
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  font-size: 1.05rem;
+  color: var(--text);
+}
+.brand .accent {
+  color: var(--crimson);
+}
+
+.nav {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+}
+.nav a {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+}
+.nav a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.main {
+  flex: 1;
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+/* Cards / panels -------------------------------------------------------- */
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+/* Forms ----------------------------------------------------------------- */
+label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--crimson);
+}
+
+.field {
+  margin-bottom: 0.9rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.row > .field {
+  flex: 1;
+  min-width: 160px;
+}
+
+button,
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  background: var(--crimson);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+button:hover:not(:disabled),
+.btn:hover {
+  background: var(--crimson-hi);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.btn-ghost:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: transparent;
+  border: 1px solid var(--crimson-dim);
+  color: var(--crimson-hi);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--crimson-dim);
+  color: #fff;
+}
+
+/* Tables / lists -------------------------------------------------------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+tr:last-child td {
+  border-bottom: none;
+}
+
+.empty {
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 0.5rem 0;
+}
+
+/* Badges / chips -------------------------------------------------------- */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+}
+.badge.ok {
+  color: var(--ok);
+  border-color: rgba(46, 204, 113, 0.4);
+}
+.badge.bad {
+  color: var(--err);
+  border-color: rgba(255, 77, 79, 0.4);
+}
+
+.chip {
+  display: inline-block;
+  margin: 0 0.25rem 0.25rem 0;
+  padding: 0.12rem 0.45rem;
+  border-radius: 4px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+/* Alerts / messages ----------------------------------------------------- */
+.alert {
+  padding: 0.7rem 0.9rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+}
+.alert.error {
+  border-color: rgba(255, 77, 79, 0.5);
+  background: rgba(255, 77, 79, 0.08);
+  color: #ffb3b4;
+}
+.alert.success {
+  border-color: rgba(46, 204, 113, 0.5);
+  background: rgba(46, 204, 113, 0.08);
+  color: #aef0c9;
+}
+.alert.warn {
+  border-color: rgba(241, 196, 15, 0.5);
+  background: rgba(241, 196, 15, 0.08);
+  color: #f6e2a0;
+}
+
+/* The "shown once" secret reveal box ------------------------------------ */
+.secret-box {
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  word-break: break-all;
+  background: #000;
+  border: 1px dashed var(--crimson);
+  border-radius: 6px;
+  padding: 0.8rem;
+  margin: 0.6rem 0;
+  color: var(--crimson-hi);
+}
+
+.muted {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.spacer {
+  height: 0.5rem;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.center-page {
+  max-width: 380px;
+  margin: 8vh auto 0;
+}

@@ -43,7 +43,8 @@ async function main(): Promise<void> {
 
   try {
     await app.listen({ port: env.PORT, host: env.HOST });
-    app.log.info(`AgentAuth listening on http://${env.HOST}:${env.PORT}`);
+    const scheme = env.HTTPS_CERT && env.HTTPS_KEY ? 'https' : 'http';
+    app.log.info(`AgentAuth listening on ${scheme}://${env.HOST}:${env.PORT}`);
   } catch (err) {
     app.log.error({ err: (err as Error).message }, 'failed to start');
     process.exit(1);

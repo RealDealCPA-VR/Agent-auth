@@ -164,6 +164,7 @@ export const auditEvents = pgTable(
     ip: text('ip'),
     prevHash: text('prev_hash'),
     hash: text('hash').notNull(),
+    hashKeyId: text('hash_key_id').notNull(), // which audit HMAC key signed this row
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
