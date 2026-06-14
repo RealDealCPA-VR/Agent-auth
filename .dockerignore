@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+.server.log
+coverage
+.vscode
+.idea
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+**/*.test.ts
