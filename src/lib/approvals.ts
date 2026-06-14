@@ -178,9 +178,12 @@ export async function deny(
     .from(schema.passports)
     .where(eq(schema.passports.principalId, principalId));
 
+  const now = Date.now();
   const updated = await db
     .update(schema.approvalRequests)
-    .set({ status: 'denied', decidedAt: new Date(), decidedBy: principalId })
+    // Refresh TTL from the decision (like approve) so a denial sticks for the
+    // full window instead of expiring at the original request's creation TTL.
+    .set({ status: 'denied', decidedAt: new Date(now), decidedBy: principalId, expiresAt: ttlFromNow(now) })
     .where(
       and(
         eq(schema.approvalRequests.id, requestId),

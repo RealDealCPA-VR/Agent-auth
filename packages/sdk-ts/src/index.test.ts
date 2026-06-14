@@ -471,3 +471,22 @@ describe('HumanClient admin operations', () => {
     expect(calls[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
   });
 });
+
+describe('HumanClient approval methods', () => {
+  it('lists, approves, and denies via the right routes', async () => {
+    const { calls } = stubFetch([
+      { status: 200, body: { items: [], pagination: { limit: 50, offset: 0, total: 0, returned: 0 } } },
+      { status: 200, body: { id: 'r1', status: 'approved' } },
+      { status: 200, body: { id: 'r1', status: 'denied' } },
+    ]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    await hc.listApprovals();
+    await hc.approveRequest('r1');
+    await hc.denyRequest('r1');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/approvals`);
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[1]?.method).toBe('POST');
+    expect(calls[1]?.url).toBe(`${BASE}/v1/approvals/r1/approve`);
+    expect(calls[2]?.url).toBe(`${BASE}/v1/approvals/r1/deny`);
+  });
+});

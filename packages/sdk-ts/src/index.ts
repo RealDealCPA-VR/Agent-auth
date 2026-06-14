@@ -132,6 +132,18 @@ export interface AuditVerification {
   brokenAtSeq: number | null;
 }
 
+/** A human approval request for a credential whose policy requires approval. */
+export interface ApprovalRequest {
+  id: string;
+  credentialId: string;
+  agentId: string;
+  passportId: string;
+  status: 'pending' | 'approved' | 'denied';
+  createdAt: string;
+  decidedAt?: string | null;
+  expiresAt: string;
+}
+
 // --- Error type -------------------------------------------------------------
 
 /** The server's error envelope shape. */
@@ -671,6 +683,34 @@ export class HumanClient extends Transport {
     return this.request<AuditVerification>({
       method: 'GET',
       path: '/v1/audit/verify',
+      authorization: this.authHeader,
+    });
+  }
+
+  /** List pending approval requests across the passports you own. */
+  listApprovals(opts: ListOptions = {}): Promise<Page<ApprovalRequest>> {
+    return this.request<Page<ApprovalRequest>>({
+      method: 'GET',
+      path: '/v1/approvals',
+      query: { limit: opts.limit, offset: opts.offset },
+      authorization: this.authHeader,
+    });
+  }
+
+  /** Approve a pending request, granting a single-use, TTL-bounded credential use. */
+  approveRequest(requestId: string): Promise<ApprovalRequest> {
+    return this.request<ApprovalRequest>({
+      method: 'POST',
+      path: `/v1/approvals/${encodeURIComponent(requestId)}/approve`,
+      authorization: this.authHeader,
+    });
+  }
+
+  /** Deny a pending request. */
+  denyRequest(requestId: string): Promise<ApprovalRequest> {
+    return this.request<ApprovalRequest>({
+      method: 'POST',
+      path: `/v1/approvals/${encodeURIComponent(requestId)}/deny`,
       authorization: this.authHeader,
     });
   }

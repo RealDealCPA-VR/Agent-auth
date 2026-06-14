@@ -459,3 +459,27 @@ def test_use_credential_202_raises_approval_pending():
     assert exc.value.status == 202
     assert exc.value.code == "approval_pending"
     assert exc.value.request_id == "req_99"
+
+
+def test_human_approval_methods():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        if request.url.path.endswith("/approve") or request.url.path.endswith("/deny"):
+            return ok({"id": "r1", "status": "approved", "credentialId": "c1",
+                       "agentId": "a1", "passportId": "p1",
+                       "createdAt": "t", "expiresAt": "t2"})
+        return ok({"items": [], "pagination": {"limit": 50, "offset": 0, "total": 0, "returned": 0}})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    page = client.list_approvals()
+    assert "items" in page
+    approved = client.approve_request("r1")
+    assert approved["status"] == "approved"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v1/approvals/r1/approve"
+    denied = client.deny_request("r1")
+    assert seen["path"] == "/v1/approvals/r1/deny"
+    assert denied["id"] == "r1"

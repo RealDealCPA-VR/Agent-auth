@@ -323,6 +323,21 @@ class HumanClient(_BaseClient):
         """Verify the audit hash-chain. Returns ``{ok, count, brokenAtSeq}``."""
         return self._request("GET", "/audit/verify")
 
+    # -- approvals ---------------------------------------------------------
+
+    def list_approvals(self, *, limit: Optional[int] = None,
+                       offset: Optional[int] = None) -> Page:
+        """List pending approval requests across the passports you own."""
+        return self._request("GET", "/approvals", params=_page_params(limit, offset))
+
+    def approve_request(self, request_id: str) -> JSON:
+        """Approve a pending request. Returns the updated approval request."""
+        return self._request("POST", f"/approvals/{request_id}/approve")
+
+    def deny_request(self, request_id: str) -> JSON:
+        """Deny a pending request. Returns the updated approval request."""
+        return self._request("POST", f"/approvals/{request_id}/deny")
+
 
 class AgentAuthClient(_BaseClient):
     """Data-plane client authenticated with an agent API key.
