@@ -41,6 +41,18 @@ const schema = z
     // validity is refreshed to this window at approval time.
     APPROVAL_TTL_SECONDS: z.coerce.number().int().positive().default(900),
 
+    // OAuth provider registry, as JSON mapping provider name -> config:
+    //   {"github":{"authUrl":"...","tokenUrl":"...","clientId":"...",
+    //              "clientSecret":"...","scopes":["repo"]}}
+    // Validated in the superRefine below (valid JSON object; each entry has string
+    // authUrl/tokenUrl/clientId/clientSecret, optional string[] scopes).
+    OAUTH_PROVIDERS: z.string().optional(),
+    // Public base URL of this server; the provider redirects back to
+    // `${OAUTH_REDIRECT_BASE}/v1/oauth/callback` after authorization.
+    OAUTH_REDIRECT_BASE: z.string().url().optional(),
+    // How long an in-flight authorization (PKCE/state) row stays valid.
+    OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+
     // Key provider for the KEK layer that wraps per-passport data keys.
     //   local — wrap with MASTER_KEY in-process (default)
     //   kms   — wrap via an external KMS (see KMS_* below); MASTER_KEY never holds the KEK
@@ -132,6 +144,61 @@ const schema = z
     validateRetired(e.MASTER_KEYS_RETIRED, 'MASTER_KEYS_RETIRED');
     validateRetired(e.JWT_SECRETS_RETIRED, 'JWT_SECRETS_RETIRED');
     validateRetired(e.AUDIT_KEYS_RETIRED, 'AUDIT_KEYS_RETIRED');
+
+    // OAUTH_PROVIDERS: a JSON object of name -> {authUrl, tokenUrl, clientId,
+    // clientSecret, scopes?:string[]}. Validated up-front so a malformed registry
+    // fails the boot cleanly instead of throwing on first OAuth request.
+    if (e.OAUTH_PROVIDERS) {
+      let providers: unknown;
+      try {
+        providers = JSON.parse(e.OAUTH_PROVIDERS);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OAUTH_PROVIDERS'],
+          message: 'must be valid JSON: {"<name>":{authUrl,tokenUrl,clientId,clientSecret}}',
+        });
+        return;
+      }
+      if (typeof providers !== 'object' || providers === null || Array.isArray(providers)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['OAUTH_PROVIDERS'],
+          message: 'must be a JSON object of provider name -> config',
+        });
+        return;
+      }
+      for (const [name, cfg] of Object.entries(providers as Record<string, unknown>)) {
+        if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['OAUTH_PROVIDERS'],
+            message: `provider "${name}" must be an object`,
+          });
+          continue;
+        }
+        const c = cfg as Record<string, unknown>;
+        for (const key of ['authUrl', 'tokenUrl', 'clientId', 'clientSecret'] as const) {
+          if (typeof c[key] !== 'string' || (c[key] as string).length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['OAUTH_PROVIDERS'],
+              message: `provider "${name}" is missing string ${key}`,
+            });
+          }
+        }
+        if (
+          c.scopes !== undefined &&
+          (!Array.isArray(c.scopes) || c.scopes.some((s) => typeof s !== 'string'))
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['OAUTH_PROVIDERS'],
+            message: `provider "${name}" scopes must be an array of strings`,
+          });
+        }
+      }
+    }
 
     const sslMode = e.DATABASE_SSL ?? (e.NODE_ENV === 'production' ? 'require' : 'disable');
     if (sslMode === 'verify' && e.DATABASE_SSL_CA) {

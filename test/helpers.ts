@@ -20,7 +20,7 @@ export async function makeApp(): Promise<FastifyInstance> {
 
 /** Truncate every table between tests for isolation. */
 export async function resetDb(): Promise<void> {
-  await sql`TRUNCATE principals, passports, credentials, agents, approval_requests, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE principals, passports, credentials, agents, approval_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
 }
 
 export function auth(token: string): Record<string, string> {

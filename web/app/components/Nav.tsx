@@ -35,6 +35,7 @@ export default function Nav() {
           <>
             <Link href="/passports">Passports</Link>
             <Link href="/agents">Agents</Link>
+            <Link href="/approvals">Approvals</Link>
             <Link href="/audit">Audit</Link>
           </>
         )}

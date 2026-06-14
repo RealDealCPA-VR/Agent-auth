@@ -1,5 +1,5 @@
 CREATE TYPE "public"."approval_status" AS ENUM('pending', 'approved', 'denied');--> statement-breakpoint
-CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'approval.approve', 'approval.deny', 'auth.denied', 'authz.denied');--> statement-breakpoint
+CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'approval.approve', 'approval.deny', 'oauth.start', 'oauth.capture', 'auth.denied', 'authz.denied');--> statement-breakpoint
 CREATE TYPE "public"."credential_type" AS ENUM('password', 'oauth_token', 'cookie', 'api_key');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -61,6 +61,20 @@ CREATE TABLE IF NOT EXISTS "credentials" (
 	"require_approval" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "oauth_flows" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"state" text NOT NULL,
+	"code_verifier" text NOT NULL,
+	"principal_id" uuid NOT NULL,
+	"passport_id" uuid NOT NULL,
+	"provider" text NOT NULL,
+	"target" text NOT NULL,
+	"label" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "oauth_flows_state_unique" UNIQUE("state")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "passports" (
@@ -131,5 +145,6 @@ CREATE INDEX IF NOT EXISTS "audit_passport_idx" ON "audit_events" USING btree ("
 CREATE INDEX IF NOT EXISTS "audit_principal_idx" ON "audit_events" USING btree ("principal_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_agent_idx" ON "audit_events" USING btree ("agent_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "credentials_passport_idx" ON "credentials" USING btree ("passport_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "oauth_flows_state_idx" ON "oauth_flows" USING btree ("state");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "passports_principal_idx" ON "passports" USING btree ("principal_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "revoked_sessions_expiry_idx" ON "revoked_sessions" USING btree ("expires_at");

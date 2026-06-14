@@ -221,6 +221,29 @@ export interface AuditVerifyResult {
   brokenAtSeq: number | null;
 }
 
+export type ApprovalStatus =
+  | 'pending'
+  | 'approved'
+  | 'denied'
+  | 'expired'
+  | string;
+
+export interface ApprovalRequest {
+  id: string;
+  credentialId: string;
+  agentId: string;
+  passportId: string;
+  status: ApprovalStatus;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+/** Response from starting an OAuth authorization flow. */
+export interface OAuthStart {
+  authorizeUrl: string;
+  state: string;
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint wrappers
 // ---------------------------------------------------------------------------
@@ -338,5 +361,43 @@ export const api = {
 
   verifyAudit(): Promise<AuditVerifyResult> {
     return request<AuditVerifyResult>('/v1/audit/verify');
+  },
+
+  // --- Approvals ---------------------------------------------------------
+  listApprovals(
+    limit?: number,
+    offset?: number,
+  ): Promise<Page<ApprovalRequest>> {
+    return request<Page<ApprovalRequest>>(
+      `/v1/approvals${pageQuery(limit, offset)}`,
+    );
+  },
+
+  approveRequest(id: string): Promise<ApprovalRequest> {
+    return request<ApprovalRequest>(
+      `/v1/approvals/${encodeURIComponent(id)}/approve`,
+      { method: 'POST' },
+    );
+  },
+
+  denyRequest(id: string): Promise<ApprovalRequest> {
+    return request<ApprovalRequest>(
+      `/v1/approvals/${encodeURIComponent(id)}/deny`,
+      { method: 'POST' },
+    );
+  },
+
+  // --- OAuth connect -----------------------------------------------------
+  startOAuth(
+    passportId: string,
+    provider: string,
+    body?: { target?: string; label?: string },
+  ): Promise<OAuthStart> {
+    return request<OAuthStart>(
+      `/v1/passports/${encodeURIComponent(
+        passportId,
+      )}/oauth/${encodeURIComponent(provider)}/start`,
+      { method: 'POST', body: body ?? {} },
+    );
   },
 };

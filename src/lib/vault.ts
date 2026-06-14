@@ -3,6 +3,8 @@ import { db, schema } from '../db/index.js';
 import { generateDek, seal, open, type SealedBox, type WrappedKey } from '../crypto/envelope.js';
 import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
 import { requestOrConsume } from './approvals.js';
+import { getProvider } from '../oauth/registry.js';
+import { needsRefresh, refreshToken, type TokenSet } from '../oauth/tokens.js';
 
 /**
  * Vault operations. All DEK material is unwrapped transiently per-call and never
@@ -104,7 +106,87 @@ export type UseResult =
   | { status: 'use_limit' }
   | { status: 'approval_pending'; requestId: string }
   | { status: 'approval_denied' }
+  | { status: 'refresh_failed' }
   | { status: 'decrypt_error' };
+
+// Per-credential advisory-lock namespace for serializing oauth token refresh.
+// Distinct from the audit-chain lock so the two never contend.
+const OAUTH_REFRESH_LOCK_NS = 4242422;
+
+/**
+ * Hash a credential id into the 32-bit lock-key space for pg_advisory_xact_lock,
+ * so concurrent refreshers of the SAME credential serialize while different
+ * credentials don't contend. Uses a cheap, stable string hash of the uuid.
+ */
+function credLockKey(credentialId: string): number {
+  let h = 0;
+  for (let i = 0; i < credentialId.length; i += 1) {
+    h = (Math.imul(31, h) + credentialId.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
+/**
+ * For an oauth_token credential: ensure the access token is fresh, refreshing it
+ * (and re-sealing the updated token set) when it is expired or near expiry. The
+ * refresh is serialized per-credential with a transaction-scoped advisory lock so
+ * concurrent agents don't double-refresh; the loser re-reads the freshly re-sealed
+ * tokens inside the same tx. Returns the (possibly new) access token, or null on
+ * refresh failure. `aad` binds the re-seal to passport+target like the original.
+ */
+async function freshOauthAccessToken(
+  passportId: string,
+  cred: { id: string; target: string; metadata: unknown },
+  tokens: TokenSet,
+  dek: Buffer,
+  aad: Buffer,
+): Promise<string | null> {
+  if (!needsRefresh(tokens)) return tokens.access_token;
+
+  const meta = (cred.metadata ?? {}) as Record<string, unknown>;
+  const provider = typeof meta.provider === 'string' ? getProvider(meta.provider) : undefined;
+  // No provider configured (removed since capture) or no refresh token: we can't
+  // refresh. Hand back the current (likely-expired) token rather than failing —
+  // the policy/window checks already passed and the caller may still succeed.
+  if (!provider || !tokens.refresh_token) return tokens.access_token;
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${OAUTH_REFRESH_LOCK_NS}, ${credLockKey(cred.id)})`);
+
+    // Re-read under the lock: a concurrent winner may have already refreshed.
+    const [fresh] = await tx
+      .select({ sealed: schema.credentials.sealed })
+      .from(schema.credentials)
+      .where(eq(schema.credentials.id, cred.id))
+      .limit(1);
+    if (fresh) {
+      try {
+        const current = JSON.parse(open(dek, fresh.sealed as SealedBox, aad).toString('utf8')) as TokenSet;
+        if (!needsRefresh(current)) return current.access_token;
+        tokens = current;
+      } catch {
+        // Fall through to refresh with the tokens we already hold.
+      }
+    }
+
+    let updated: TokenSet;
+    try {
+      updated = await refreshToken(provider, tokens);
+    } catch {
+      return null;
+    }
+
+    const reSealed = seal(dek, Buffer.from(JSON.stringify(updated), 'utf8'), aad);
+    await tx
+      .update(schema.credentials)
+      .set({
+        sealed: reSealed,
+        metadata: { provider: provider.name, scope: updated.scope, tokenExpiresAt: updated.expires_at },
+      })
+      .where(eq(schema.credentials.id, cred.id));
+    return updated.access_token;
+  });
+}
 
 /**
  * The agent reuse path: unseal a secret for use. Returns cleartext to the caller
@@ -169,8 +251,23 @@ export async function useCredential(
   const aad = Buffer.from(`${passportId}:${cred.target}`);
   try {
     const plaintextBuf = open(dek, cred.sealed as SealedBox, aad);
-    const secret = plaintextBuf.toString('utf8');
+    let secret = plaintextBuf.toString('utf8');
     plaintextBuf.fill(0); // scrub the decrypted buffer; the string is the caller's to use
+
+    // oauth_token credentials seal a JSON token set, not a bare secret. Refresh
+    // transparently near expiry and return only the (possibly new) access token.
+    if (cred.type === 'oauth_token') {
+      let tokens: TokenSet;
+      try {
+        tokens = JSON.parse(secret) as TokenSet;
+      } catch {
+        return { status: 'decrypt_error' };
+      }
+      const access = await freshOauthAccessToken(passportId, cred, tokens, dek, aad);
+      if (access === null) return { status: 'refresh_failed' };
+      secret = access;
+    }
+
     return {
       status: 'ok',
       id: cred.id,

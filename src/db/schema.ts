@@ -175,6 +175,33 @@ export const approvalRequests = pgTable(
   }),
 );
 
+/**
+ * oauth_flows — short-lived state for an in-flight authorization-code flow. A
+ * `start` call mints a row carrying the PKCE code_verifier, the random CSRF
+ * `state`, and the context needed to seal the captured tokens at callback time
+ * (which passport/principal, target, label). Rows are deleted once consumed and
+ * are ignored past `expiresAt`. Nothing here is a secret at rest beyond the PKCE
+ * verifier, which is single-use and short-lived.
+ */
+export const oauthFlows = pgTable(
+  'oauth_flows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    state: text('state').notNull().unique(),
+    codeVerifier: text('code_verifier').notNull(),
+    principalId: uuid('principal_id').notNull(),
+    passportId: uuid('passport_id').notNull(),
+    provider: text('provider').notNull(),
+    target: text('target').notNull(),
+    label: text('label').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    byState: index('oauth_flows_state_idx').on(t.state),
+  }),
+);
+
 export const auditAction = pgEnum('audit_action', [
   'principal.register',
   'principal.login',
@@ -186,6 +213,8 @@ export const auditAction = pgEnum('audit_action', [
   'agent.revoke',
   'approval.approve',
   'approval.deny',
+  'oauth.start',
+  'oauth.capture',
   'auth.denied',
   'authz.denied',
 ]);

@@ -156,6 +156,8 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
           message: 'awaiting approval',
         });
       }
+      if (result.status === 'refresh_failed')
+        return deny('refresh_failed', 502, 'oauth_refresh_failed', 'failed to refresh oauth token');
       if (result.status === 'decrypt_error')
         return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
 

@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { api, Credential, CredentialType } from '@/lib/api';
 import RequireAuth from '../../components/RequireAuth';
 import ErrorBanner from '../../components/ErrorBanner';
+import OAuthConnect from './OAuthConnect';
 
 const TYPES: CredentialType[] = ['password', 'oauth_token', 'cookie', 'api_key'];
 
@@ -186,6 +187,8 @@ function PassportDetailView({ passportId }: { passportId: string }) {
           </button>
         </form>
       </div>
+
+      <OAuthConnect passportId={passportId} />
 
       <div className="card">
         <h2>Credentials</h2>
