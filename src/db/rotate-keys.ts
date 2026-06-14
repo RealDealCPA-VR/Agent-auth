@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db, schema, closeDb } from './index.js';
 import type { WrappedKey } from '../crypto/envelope.js';
-import { rotateWrappedDek, activeKeyId } from '../crypto/keyprovider/index.js';
+import { rotateWrappedDek, getActiveKeyId } from '../crypto/keyprovider/index.js';
 
 /**
  * Key rotation: re-wrap every passport's data key under the current active KEK
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     }
   }
   console.warn(
-    `rotated ${rotated}/${passports.length} passport keys to active KEK "${activeKeyId}"`,
+    `rotated ${rotated}/${passports.length} passport keys to active KEK "${getActiveKeyId()}"`,
   );
   await closeDb();
 }

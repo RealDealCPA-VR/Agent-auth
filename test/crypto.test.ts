@@ -39,9 +39,9 @@ describe('envelope encryption', () => {
 
   it('records the active key id on wrapped DEKs', async () => {
     const { generateDek } = await import('../src/crypto/envelope.js');
-    const { wrapDek, activeKeyId } = await import('../src/crypto/keyprovider/index.js');
+    const { wrapDek, getActiveKeyId } = await import('../src/crypto/keyprovider/index.js');
     const wrapped = await wrapDek(generateDek());
-    expect(wrapped.kid).toBe(activeKeyId);
+    expect(wrapped.kid).toBe(getActiveKeyId());
   });
 
   it('rotateWrappedDek is a no-op when already on the active key', async () => {

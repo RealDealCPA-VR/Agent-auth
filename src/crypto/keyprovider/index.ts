@@ -1,6 +1,7 @@
 import { env } from '../../env.js';
 import type { WrappedKey } from '../envelope.js';
 import { LocalKeyProvider } from './local.js';
+import { KmsKeyProvider } from './kms.js';
 
 /**
  * A KeyProvider owns the KEK and performs the outer envelope step: wrapping and
@@ -23,9 +24,12 @@ let provider: KeyProvider | null = null;
 function build(): KeyProvider {
   switch (env.KEY_PROVIDER) {
     case 'kms':
-      // Wired in by configureKmsProvider() at boot (see crypto/keyprovider/kms.ts)
-      // via setKeyProvider(); reaching here means it wasn't configured.
-      throw new Error('KEY_PROVIDER=kms requires KMS configuration at startup');
+      if (!env.KMS_KEY_ID) throw new Error('KEY_PROVIDER=kms requires KMS_KEY_ID');
+      return new KmsKeyProvider({
+        keyId: env.KMS_KEY_ID,
+        region: env.KMS_REGION,
+        endpoint: env.KMS_ENDPOINT,
+      });
     case 'local':
     default:
       return new LocalKeyProvider();
@@ -42,7 +46,10 @@ export function setKeyProvider(p: KeyProvider): void {
   provider = p;
 }
 
-export const activeKeyId = getKeyProvider().activeKeyId;
+/** Active KEK id — resolved lazily so KMS config / test injection can apply first. */
+export function getActiveKeyId(): string {
+  return getKeyProvider().activeKeyId;
+}
 
 export function wrapDek(dek: Buffer): Promise<WrappedKey> {
   return getKeyProvider().wrap(dek);

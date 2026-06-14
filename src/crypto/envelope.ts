@@ -23,10 +23,10 @@ export const KEY_BYTES = 32; // AES-256
 
 export interface SealedBox {
   v: number; // format version
-  alg: typeof ALG_ID;
-  iv: string; // base64
+  alg: string; // 'A256GCM' for AES-GCM, or a provider tag (e.g. 'KMS') for wrapped DEKs
+  iv: string; // base64 (empty for non-AEAD provider wraps)
   ciphertext: string; // base64
-  tag: string; // base64 auth tag
+  tag: string; // base64 auth tag (empty for non-AEAD provider wraps)
 }
 
 export interface WrappedKey extends SealedBox {
