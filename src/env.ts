@@ -85,6 +85,30 @@ const schema = z
     HTTPS_CERT: z.string().optional(),
     HTTPS_KEY: z.string().optional(),
 
+    // mTLS agent identity. When enabled, an agent may authenticate with a client
+    // certificate (mapped to its agent by SHA-256 fingerprint) as an ALTERNATIVE
+    // to its bearer API key. Two deployment modes:
+    //   native — this server terminates TLS and verifies the client cert against
+    //            MTLS_CA; the peer cert's fingerprint is read off the TLS socket.
+    //   proxy  — a trusted reverse proxy verifies the client cert and forwards the
+    //            fingerprint in MTLS_FP_HEADER (set MTLS_TRUSTED_PROXY=true).
+    // Accept 'true'/'false' strings; default false. Match the boolean-ish coercion
+    // used elsewhere by mapping the literal strings explicitly.
+    MTLS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // CA bundle (PEM file path) trusting client certs — required in native mode.
+    MTLS_CA: z.string().optional(),
+    // When true, trust an inbound fingerprint header from a TLS-terminating proxy
+    // instead of reading the peer cert off the socket.
+    MTLS_TRUSTED_PROXY: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Header the trusted proxy uses to forward the client-cert fingerprint.
+    MTLS_FP_HEADER: z.string().default('x-client-cert-fingerprint'),
+
     // Comma-separated CORS allowlist. Empty => no cross-origin browser access.
     CORS_ORIGINS: z.string().default(''),
 
@@ -232,6 +256,28 @@ const schema = z
             message: `${k} file not readable`,
           });
         }
+      }
+    }
+
+    // mTLS: native mode needs a readable CA bundle to verify client certs. Proxy
+    // mode delegates verification to the proxy, so no CA is required here. Either
+    // way, if MTLS_CA is provided it must be readable.
+    if (e.MTLS_ENABLED && !e.MTLS_TRUSTED_PROXY && !e.MTLS_CA) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MTLS_CA'],
+        message: 'native mTLS (MTLS_ENABLED, not MTLS_TRUSTED_PROXY) requires MTLS_CA',
+      });
+    }
+    if (e.MTLS_CA) {
+      try {
+        accessSync(e.MTLS_CA, constants.R_OK);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MTLS_CA'],
+          message: 'MTLS_CA file not found or not readable',
+        });
       }
     }
   })

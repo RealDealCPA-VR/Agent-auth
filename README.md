@@ -215,14 +215,26 @@ Production turns on Postgres TLS by default, locks CORS to your allowlist, enabl
 CSP, and validates that every secret is present and well-formed before accepting a
 single request.
 
+## 🧩 Ecosystem
+
+- **TypeScript SDK** — [`packages/sdk-ts`](./packages/sdk-ts): `new AgentAuthClient({ baseUrl, apiKey })` then `await client.useCredential('github.com')`. Plus a `HumanClient` for the management API.
+- **Python SDK** — [`packages/sdk-py`](./packages/sdk-py): the same surface (`AgentAuthClient`, `HumanClient`) over `httpx`.
+- **Admin web UI** — [`web/`](./web): a Next.js console for login, passports, credential deposit, agent issuance/revocation, the approvals queue, OAuth connect, and the audit trail.
+
+## ✅ What ships today
+
+- 🔐 **KMS-backed keys** — `KEY_PROVIDER=kms` keeps the master key in AWS KMS; the in-process key never holds it. Local AES-GCM KEK is the default.
+- 🔁 **Zero-downtime key rotation** — KEK, JWT signing key, and audit HMAC key are all versioned and rotatable. See the [rotation runbook](./docs/ROTATION.md); `pnpm db:rotate` re-wraps passports.
+- 🪪 **OAuth credential capture** — authorize a provider in the browser once (PKCE auth-code); AgentAuth seals the tokens and **transparently refreshes** them when an agent uses the credential.
+- 📜 **Per-credential policies** — max-uses, time windows, and **human approval workflows** (request → approve → single-use grant) gate sensitive credentials.
+- 🌐 **mTLS agent identity** — agents can authenticate with a client certificate (native or proxy-terminated) instead of a bearer key.
+- 🔌 **TLS termination** — native HTTPS (`HTTPS_CERT`/`HTTPS_KEY`) or front it with a proxy.
+
 ## 🔭 Roadmap
 
-- 🔁 Key rotation **ships today** via `pnpm db:rotate` (re-wraps every passport DEK
-  under a new active KEK); next up: scheduled, zero-downtime rotation sweeps
-- 🪪 OAuth/OIDC credential capture flows ("log in once" via browser handoff)
-- 📜 Per-credential usage policies & approval workflows
-- 🌐 mTLS agent identity option
-- 🧩 SDKs for the agent side (`useCredential(target)` in one line)
+- ⏳ Scheduled credential-expiry sweeps & richer approval notifications
+- 🧭 OIDC discovery + more first-class OAuth providers out of the box
+- 📊 Built-in dashboards on top of `/metrics`
 
 ## 📄 License
 

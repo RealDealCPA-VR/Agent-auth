@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { verifySession, type HumanClaims } from '../auth/human.js';
 import { authenticateAgent, type AgentIdentity } from '../auth/agent.js';
+import { extractClientFingerprint, authenticateAgentByCert } from '../auth/mtls.js';
 import { audit } from '../lib/audit.js';
 import { fail } from '../lib/http.js';
 
@@ -42,6 +43,34 @@ export async function requireHuman(req: FastifyRequest, reply: FastifyReply): Pr
 export async function requireAgent(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const token = bearer(req);
   if (!token) {
+    // No bearer key — attempt mTLS (client-cert fingerprint) as an alternative.
+    // Same fail-closed contract: store outage -> 503, anything else -> 401.
+    const fingerprint = extractClientFingerprint(req);
+    if (fingerprint) {
+      const certResult = await authenticateAgentByCert(fingerprint);
+      if (certResult.ok) {
+        req.agent = certResult.agent;
+        return;
+      }
+      if (certResult.reason === 'store_unavailable') {
+        await fail(
+          req,
+          reply,
+          503,
+          'store_unavailable',
+          'authorization store unavailable; access denied',
+        );
+        return;
+      }
+      await audit({
+        action: 'auth.denied',
+        success: false,
+        detail: { reason: `mtls_${certResult.reason}` },
+        ip: req.ip,
+      });
+      await fail(req, reply, 401, 'unauthorized', 'agent authentication failed');
+      return;
+    }
     await fail(req, reply, 401, 'unauthorized', 'missing agent api key');
     return;
   }

@@ -8,6 +8,7 @@ import {
   bigserial,
   integer,
   index,
+  uniqueIndex,
   pgEnum,
 } from 'drizzle-orm/pg-core';
 
@@ -104,6 +105,11 @@ export const agents = pgTable(
       .references(() => passports.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     secretHash: text('secret_hash').notNull(), // argon2id of the key secret
+    // Optional mTLS client-cert binding. Stored as a lowercase SHA-256 hex
+    // fingerprint with no colons; lets an agent authenticate with a client
+    // certificate as an ALTERNATIVE to its bearer API key. Unique so a given
+    // cert maps to at most one agent.
+    certFingerprint: text('cert_fingerprint'),
     // Scopes gate what the agent may do, e.g. ["vault:read", "vault:use"] and
     // optional target globs like "target:github.com".
     scopes: jsonb('scopes').notNull().$type<string[]>().default([]),
@@ -115,6 +121,7 @@ export const agents = pgTable(
   },
   (t) => ({
     byPassport: index('agents_passport_idx').on(t.passportId),
+    byCertFingerprint: uniqueIndex('agents_cert_fingerprint_idx').on(t.certFingerprint),
   }),
 );
 
@@ -211,6 +218,7 @@ export const auditAction = pgEnum('audit_action', [
   'credential.use',
   'agent.issue',
   'agent.revoke',
+  'agent.mtls_bind',
   'approval.approve',
   'approval.deny',
   'oauth.start',

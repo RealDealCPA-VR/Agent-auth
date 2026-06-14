@@ -5,6 +5,7 @@ import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { hashSecret, generateKeySecret, formatApiKey } from '../crypto/secrets.js';
 import { isValidScope } from '../auth/agent.js';
+import { fingerprintFromPem, normalizeFingerprint } from '../auth/mtls.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
@@ -17,6 +18,15 @@ const issueSchema = z.object({
     .default(['vault:read', 'vault:use']),
   expiresAt: z.coerce.date().optional(),
 });
+
+// Bind an mTLS client cert to an agent. Provide either a PEM cert (the
+// fingerprint is derived from it) or a pre-computed SHA-256 fingerprint.
+const mtlsBindSchema = z.object({
+  certPem: z.string().min(1).optional(),
+  fingerprint: z.string().min(1).optional(),
+});
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
 export async function agentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireHuman);
@@ -180,6 +190,71 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send({ id, revoked: true });
+    },
+  );
+
+  // Bind an mTLS client certificate to one of the caller's agents. The agent may
+  // then authenticate with that client cert (by fingerprint) as an alternative to
+  // its bearer API key. Accepts a PEM cert (fingerprint derived server-side) or a
+  // pre-normalized SHA-256 fingerprint. Idempotent overwrite of the binding.
+  app.post(
+    '/v1/agents/:id/mtls',
+    {
+      schema: {
+        tags: ['agents'],
+        summary: 'Bind an mTLS client cert to an agent',
+        security: [{ humanBearer: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const parsed = mtlsBindSchema.safeParse(req.body);
+      if (!parsed.success)
+        return fail(req, reply, 400, 'invalid_request', 'invalid body', parsed.error.flatten());
+      const { certPem, fingerprint } = parsed.data;
+
+      // Derive the fingerprint from the cert, or accept a normalized one directly.
+      let fp: string;
+      if (certPem) {
+        try {
+          fp = fingerprintFromPem(certPem);
+        } catch {
+          return fail(req, reply, 400, 'invalid_request', 'certPem is not a valid X.509 certificate');
+        }
+      } else if (fingerprint) {
+        fp = normalizeFingerprint(fingerprint);
+      } else {
+        return fail(req, reply, 400, 'invalid_request', 'provide certPem or fingerprint');
+      }
+      if (!SHA256_HEX_RE.test(fp))
+        return fail(req, reply, 400, 'invalid_request', 'fingerprint must be a SHA-256 hex digest');
+
+      // Ownership: the agent's passport must belong to the caller.
+      const [row] = await db
+        .select({ id: schema.agents.id, passportId: schema.agents.passportId })
+        .from(schema.agents)
+        .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
+        .where(and(eq(schema.agents.id, id), eq(schema.passports.principalId, req.human!.sub)))
+        .limit(1);
+      if (!row) return fail(req, reply, 404, 'not_found', 'agent not found');
+
+      await db.transaction(async (tx) => {
+        await tx.update(schema.agents).set({ certFingerprint: fp }).where(eq(schema.agents.id, id));
+        await audit(
+          {
+            action: 'agent.mtls_bind',
+            success: true,
+            principalId: req.human!.sub,
+            passportId: row.passportId,
+            agentId: id,
+            detail: { fingerprint: fp },
+            ip: req.ip,
+          },
+          tx,
+        );
+      });
+
+      return reply.send({ id, certFingerprint: fp });
     },
   );
 }

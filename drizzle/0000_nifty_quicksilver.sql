@@ -1,11 +1,12 @@
 CREATE TYPE "public"."approval_status" AS ENUM('pending', 'approved', 'denied');--> statement-breakpoint
-CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'approval.approve', 'approval.deny', 'oauth.start', 'oauth.capture', 'auth.denied', 'authz.denied');--> statement-breakpoint
+CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'agent.mtls_bind', 'approval.approve', 'approval.deny', 'oauth.start', 'oauth.capture', 'auth.denied', 'authz.denied');--> statement-breakpoint
 CREATE TYPE "public"."credential_type" AS ENUM('password', 'oauth_token', 'cookie', 'api_key');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"passport_id" uuid NOT NULL,
 	"name" text NOT NULL,
 	"secret_hash" text NOT NULL,
+	"cert_fingerprint" text,
 	"scopes" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"active" boolean DEFAULT true NOT NULL,
 	"revoked_at" timestamp with time zone,
@@ -137,6 +138,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agents_passport_idx" ON "agents" USING btree ("passport_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "agents_cert_fingerprint_idx" ON "agents" USING btree ("cert_fingerprint");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "approval_requests_passport_idx" ON "approval_requests" USING btree ("passport_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "approval_requests_cred_agent_status_idx" ON "approval_requests" USING btree ("credential_id","agent_id","status");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_seq_idx" ON "audit_events" USING btree ("seq");--> statement-breakpoint

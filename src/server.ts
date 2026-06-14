@@ -27,6 +27,19 @@ export async function buildServer(): Promise<FastifyInstance> {
       ? { key: readFileSync(env.HTTPS_KEY), cert: readFileSync(env.HTTPS_CERT) }
       : null;
 
+  // Native mTLS: request a client certificate and trust it against MTLS_CA, but
+  // do NOT reject unauthenticated requests — they still reach the handlers so the
+  // bearer-key fallback works. We authorize by looking up the cert fingerprint,
+  // not by the TLS layer's `authorized` flag. (Proxy mode terminates mTLS at the
+  // proxy and forwards a header instead, so it needs none of this.)
+  if (https && env.MTLS_ENABLED && !env.MTLS_TRUSTED_PROXY && env.MTLS_CA) {
+    Object.assign(https, {
+      requestCert: true,
+      rejectUnauthorized: false,
+      ca: readFileSync(env.MTLS_CA),
+    });
+  }
+
   const app = Fastify({
     ...(https ? { https } : {}),
     bodyLimit: env.BODY_LIMIT_BYTES,
