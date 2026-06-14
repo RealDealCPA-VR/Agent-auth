@@ -144,6 +144,9 @@ export async function approve(
   principalId: string,
 ): Promise<ApprovalRequestRow | null> {
   const now = Date.now();
+  // Correlated subquery: passed to inArray() below to produce `passport_id IN
+  // (SELECT id FROM passports WHERE principal_id = ?)`. Drizzle supports a query
+  // builder as the inArray operand; this is intentional (and covered by tests).
   const owned = db
     .select({ id: schema.passports.id })
     .from(schema.passports)
