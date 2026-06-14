@@ -153,7 +153,7 @@ export const auditEvents = pgTable(
   'audit_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    seq: bigserial('seq', { mode: 'number' }).notNull().unique(),
     action: auditAction('action').notNull(),
     principalId: uuid('principal_id'),
     passportId: uuid('passport_id'),

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS "audit_events" (
 	"ip" text,
 	"prev_hash" text,
 	"hash" text NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "audit_events_seq_unique" UNIQUE("seq")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "credentials" (

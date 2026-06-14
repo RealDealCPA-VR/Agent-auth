@@ -2,16 +2,14 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { env } from '../env.js';
+import { resolveSsl } from './ssl.js';
 
 /**
  * Apply generated SQL migrations from ./drizzle, then install database-level
  * guards that the ORM cannot express. Idempotent. Run after `pnpm db:generate`.
  */
 async function main(): Promise<void> {
-  const client = postgres(env.DATABASE_URL, {
-    max: 1,
-    ssl: env.sslMode === 'disable' ? false : 'require',
-  });
+  const client = postgres(env.DATABASE_URL, { max: 1, ssl: resolveSsl() });
   const db = drizzle(client);
 
   await migrate(db, { migrationsFolder: './drizzle' });

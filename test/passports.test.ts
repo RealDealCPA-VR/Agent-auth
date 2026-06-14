@@ -52,7 +52,7 @@ describe('passports & credential deposit', () => {
     const body = res.json();
     expect(Array.isArray(body.items)).toBe(true);
     expect(body.items).toHaveLength(2);
-    expect(body.pagination).toEqual({ limit: 50, offset: 0, count: 2 });
+    expect(body.pagination).toEqual({ limit: 50, offset: 0, total: 2, returned: 2 });
     const names = body.items.map((p: { name: string }) => p.name).sort();
     expect(names).toEqual(['a-one', 'a-two']);
     // Caller a must not see caller b's passport.
@@ -70,7 +70,7 @@ describe('passports & credential deposit', () => {
     });
     expect(first.statusCode).toBe(200);
     expect(first.json().items).toHaveLength(2);
-    expect(first.json().pagination).toEqual({ limit: 2, offset: 0, count: 2 });
+    expect(first.json().pagination).toEqual({ limit: 2, offset: 0, total: 3, returned: 2 });
 
     const second = await app.inject({
       method: 'GET',
@@ -79,7 +79,7 @@ describe('passports & credential deposit', () => {
     });
     expect(second.statusCode).toBe(200);
     expect(second.json().items).toHaveLength(1);
-    expect(second.json().pagination).toEqual({ limit: 2, offset: 2, count: 1 });
+    expect(second.json().pagination).toEqual({ limit: 2, offset: 2, total: 3, returned: 1 });
   });
 
   it('deposits a credential (201) without echoing the secret', async () => {
@@ -185,7 +185,7 @@ describe('passports & credential deposit', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.items).toHaveLength(1);
-    expect(body.pagination).toEqual({ limit: 50, offset: 0, count: 1 });
+    expect(body.pagination).toEqual({ limit: 50, offset: 0, total: 1, returned: 1 });
     const cred = body.items[0];
     expect(cred.target).toBe('github.com');
     expect(cred.type).toBe('password');

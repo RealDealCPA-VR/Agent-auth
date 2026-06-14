@@ -44,6 +44,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   });
 
+  // Track registered (method, path-pattern) pairs so the not-found handler can
+  // distinguish a missing route (404) from an unsupported method (405). Added
+  // before any route registration so onRoute fires for every route + plugin.
+  const routeRegistry: { method: string; parts: string[] }[] = [];
+  app.addHook('onRoute', (r) => {
+    const methods = Array.isArray(r.method) ? r.method : [r.method];
+    const parts = r.url.split('/').filter(Boolean);
+    for (const m of methods) routeRegistry.push({ method: m.toUpperCase(), parts });
+  });
+
   // --- Security & infrastructure plugins ------------------------------------
   await app.register(helmet, { contentSecurityPolicy: env.isProd ? undefined : false });
   await app.register(cors, {
@@ -71,14 +81,21 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
   });
 
-  // Reject unexpected bodies cleanly instead of 415: only an empty body is
-  // accepted for content-types we don't parse (e.g. body-less POSTs).
+  // Accept only an empty body for content-types we don't parse (e.g. body-less
+  // POSTs); a non-empty unsupported body is a clean 415, not a 500.
   app.addContentTypeParser('*', (_req, payload, done) => {
     let size = 0;
     payload.on('data', (c: Buffer) => (size += c.length));
-    payload.on('end', () =>
-      done(size === 0 ? null : new Error('unsupported content-type'), undefined),
-    );
+    payload.on('end', () => {
+      if (size === 0) return done(null, undefined);
+      done(
+        Object.assign(new Error('unsupported content-type'), {
+          statusCode: 415,
+          code: 'unsupported_media_type',
+        }),
+        undefined,
+      );
+    });
     payload.on('error', done);
   });
 
@@ -87,6 +104,23 @@ export async function buildServer(): Promise<FastifyInstance> {
   // after setErrorHandler) — otherwise thrown errors (e.g. body-parse failures)
   // fall back to Fastify's default serializer.
   app.setNotFoundHandler((req, reply) => {
+    // If the path matches a known route pattern under a different method, that's
+    // a 405 (with Allow), not a 404.
+    const reqParts = (req.url.split('?')[0] ?? '').split('/').filter(Boolean);
+    const allowed = new Set<string>();
+    for (const r of routeRegistry) {
+      if (r.parts.length !== reqParts.length) continue;
+      if (r.parts.every((p, i) => p.startsWith(':') || p === '*' || p === reqParts[i])) {
+        allowed.add(r.method);
+      }
+    }
+    allowed.delete('HEAD'); // implied by GET; don't advertise separately
+    if (allowed.size > 0) {
+      reply.header('allow', [...allowed].sort().join(', '));
+      return reply
+        .code(405)
+        .send(errorBody(req, 'method_not_allowed', `method ${req.method} not allowed`));
+    }
     reply.code(404).send(errorBody(req, 'not_found', 'route not found'));
   });
   app.setErrorHandler((err: FastifyError, req, reply) => {

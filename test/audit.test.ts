@@ -88,7 +88,8 @@ describe('audit trail + tamper evidence', () => {
       limit: expect.any(Number),
       offset: expect.any(Number),
     });
-    expect(body.pagination.count).toBe(body.items.length);
+    expect(body.pagination.returned).toBe(body.items.length);
+    expect(body.pagination.total).toBeGreaterThanOrEqual(body.items.length);
     expect(Array.isArray(body.items)).toBe(true);
 
     const actions = body.items.map((e: { action: string }) => e.action);
@@ -152,7 +153,7 @@ describe('audit trail + tamper evidence', () => {
       "SELECT seq FROM audit_events WHERE action = 'credential.deposit' ORDER BY seq ASC LIMIT 1",
     );
     expect(target).toBeDefined();
-    const brokenSeq = Number(target.seq);
+    const brokenSeq = Number(target!.seq);
 
     // The append-only trigger blocks updates; disable it to forge a tamper.
     await sql.unsafe('ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_mutate');
@@ -181,10 +182,10 @@ describe('audit trail + tamper evidence', () => {
     expect(threw).toBe(true);
 
     // The row must still be present after the rejected delete.
-    const [{ count }] = await sql.unsafe<{ count: string }[]>(
+    const [row] = await sql.unsafe<{ count: string }[]>(
       "SELECT count(*)::int AS count FROM audit_events WHERE action = 'credential.deposit'",
     );
-    expect(Number(count)).toBeGreaterThan(0);
+    expect(Number(row!.count)).toBeGreaterThan(0);
   });
 
   it('records a failed credential.use attempt (success=false) without the secret', async () => {

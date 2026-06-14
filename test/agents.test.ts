@@ -116,7 +116,7 @@ describe('agents (human-authenticated issuance / listing / revocation)', () => {
     const body = res.json();
     expect(Array.isArray(body.items)).toBe(true);
     expect(body.items).toHaveLength(2);
-    expect(body.pagination).toMatchObject({ count: 2 });
+    expect(body.pagination).toMatchObject({ total: 2, returned: 2 });
     expect(typeof body.pagination.limit).toBe('number');
     expect(typeof body.pagination.offset).toBe('number');
 

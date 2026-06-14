@@ -49,7 +49,7 @@ describe('agent-facing vault', () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.pagination).toMatchObject({ count: 1 });
+    expect(body.pagination).toMatchObject({ total: 1, returned: 1 });
     expect(Array.isArray(body.items)).toBe(true);
     expect(body.items).toHaveLength(1);
     expect(body.items[0].id).toBe(credId);
@@ -140,7 +140,8 @@ describe('agent-facing vault', () => {
     expect(list.statusCode).toBe(200);
     const listBody = list.json();
     expect(listBody.items).toHaveLength(0);
-    expect(listBody.pagination.count).toBe(0);
+    expect(listBody.pagination.total).toBe(0);
+    expect(listBody.pagination.returned).toBe(0);
 
     // Forbidden on use.
     const use = await app.inject({

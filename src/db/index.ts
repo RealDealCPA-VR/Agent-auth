@@ -1,26 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { env } from '../env.js';
+import { resolveSsl } from './ssl.js';
 import * as schema from './schema.js';
-
-/**
- * Resolve the Postgres TLS setting from env. Production defaults to requiring
- * TLS; `verify` additionally checks the server certificate against a CA bundle.
- */
-function resolveSsl(): postgres.Options<Record<string, never>>['ssl'] {
-  switch (env.sslMode) {
-    case 'disable':
-      return false;
-    case 'require':
-      return 'require';
-    case 'verify':
-      return {
-        rejectUnauthorized: true,
-        ...(env.DATABASE_SSL_CA ? { ca: readFileSync(env.DATABASE_SSL_CA, 'utf8') } : {}),
-      };
-  }
-}
 
 // Single shared connection pool. `max` kept modest; this is an auth broker, not
 // a high-throughput data plane.

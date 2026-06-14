@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { accessSync, constants } from 'node:fs';
 import { z } from 'zod';
 
 /**
@@ -55,6 +56,53 @@ const schema = z
     HOST: z.string().default('0.0.0.0'),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  })
+  // Validate compound/dependent fields here so a bad value fails fast with the
+  // clean env error message instead of throwing at module-import time.
+  .superRefine((e, ctx) => {
+    if (e.MASTER_KEYS_RETIRED) {
+      let retired: unknown;
+      try {
+        retired = JSON.parse(e.MASTER_KEYS_RETIRED);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MASTER_KEYS_RETIRED'],
+          message: 'must be valid JSON: {"<kid>":"<base64-32B>"}',
+        });
+        retired = undefined;
+      }
+      if (retired && (typeof retired !== 'object' || Array.isArray(retired))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MASTER_KEYS_RETIRED'],
+          message: 'must be a JSON object of kid -> base64 key',
+        });
+      } else if (retired) {
+        for (const [kid, val] of Object.entries(retired as Record<string, unknown>)) {
+          if (typeof val !== 'string' || Buffer.from(val, 'base64').length !== 32) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['MASTER_KEYS_RETIRED'],
+              message: `retired key "${kid}" must decode to exactly 32 bytes of base64`,
+            });
+          }
+        }
+      }
+    }
+
+    const sslMode = e.DATABASE_SSL ?? (e.NODE_ENV === 'production' ? 'require' : 'disable');
+    if (sslMode === 'verify' && e.DATABASE_SSL_CA) {
+      try {
+        accessSync(e.DATABASE_SSL_CA, constants.R_OK);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['DATABASE_SSL_CA'],
+          message: 'CA file not found or not readable',
+        });
+      }
+    }
   })
   .transform((e) => ({
     ...e,

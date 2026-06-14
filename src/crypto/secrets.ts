@@ -32,10 +32,12 @@ export async function verifySecret(hash: string, secret: string): Promise<boolea
  * login response time does not reveal whether an email is registered. Computed
  * once and cached.
  */
-let dummyHash: string | null = null;
-export async function getDummyHash(): Promise<string> {
-  if (!dummyHash) dummyHash = await hashSecret('agentauth::timing::equalizer');
-  return dummyHash;
+let dummyHashPromise: Promise<string> | null = null;
+export function getDummyHash(): Promise<string> {
+  // Cache the promise (not the resolved value) so concurrent callers share a
+  // single argon2 computation instead of racing to recompute it.
+  if (!dummyHashPromise) dummyHashPromise = hashSecret('agentauth::timing::equalizer');
+  return dummyHashPromise;
 }
 
 /**

@@ -106,4 +106,22 @@ describe('HTTP / protocol concerns', () => {
     expect(body.openapi).toBeTruthy();
     expect(typeof body.openapi).toBe('string');
   });
+
+  it('unsupported content-type with a non-empty body -> 415 (not 500)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    });
+    expect(res.statusCode).toBe(415);
+    expect(res.json().error.code).toBe('unsupported_media_type');
+  });
+
+  it('wrong method on an existing route -> 405 with Allow header', async () => {
+    const res = await app.inject({ method: 'GET', url: '/v1/auth/login' });
+    expect(res.statusCode).toBe(405);
+    expect(res.json().error.code).toBe('method_not_allowed');
+    expect((res.headers['allow'] ?? '').toString()).toContain('POST');
+  });
 });

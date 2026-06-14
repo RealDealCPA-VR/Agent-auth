@@ -6,7 +6,14 @@ import { rotateWrappedDek, activeKeyId, type WrappedKey } from '../crypto/envelo
  * Key rotation: re-wrap every passport's data key under the current active KEK
  * (MASTER_KEY / MASTER_KEY_ID), leaving retired keys configured in
  * MASTER_KEYS_RETIRED only long enough to unwrap the old DEKs. Idempotent — a
- * passport already on the active key is skipped. Run after deploying a new KEK:
+ * passport already on the active key is skipped.
+ *
+ * This rotates the KEK, not the DEK: the unwrapped DEK bytes are identical
+ * before and after, so credentials sealed with that DEK stay decryptable and a
+ * deposit running concurrently with rotation cannot be corrupted (it seals with
+ * the same DEK regardless of which KEK currently wraps it).
+ *
+ * Run after deploying a new KEK:
  *
  *   MASTER_KEY=<new> MASTER_KEY_ID=k2 MASTER_KEYS_RETIRED='{"k1":"<old>"}' pnpm db:rotate
  */

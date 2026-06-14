@@ -250,6 +250,10 @@ describe('cross-tenant isolation / IDOR', () => {
     expect(res.statusCode).toBe(200);
     const events = res.json().items;
 
+    // Precondition: B must actually have its own events, so the assertions below
+    // exercise the scoping filter rather than passing vacuously on an empty array.
+    expect(events.length).toBeGreaterThan(0);
+
     // None of B's audit events may reference A's passport or A's agent.
     expect(events.every((e: { passportId: string | null }) => e.passportId !== a.passportId)).toBe(
       true,

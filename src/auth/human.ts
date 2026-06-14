@@ -22,6 +22,7 @@ export interface HumanClaims {
   sub: string; // principalId
   email: string;
   jti: string;
+  exp: number; // token expiry (epoch seconds), as signed
 }
 
 export interface IssuedSession {
@@ -60,11 +61,12 @@ export async function verifySession(token: string): Promise<HumanClaims | null> 
     if (
       typeof payload.sub !== 'string' ||
       typeof payload.email !== 'string' ||
-      typeof payload.jti !== 'string'
+      typeof payload.jti !== 'string' ||
+      typeof payload.exp !== 'number'
     ) {
       return null;
     }
-    claims = { sub: payload.sub, email: payload.email, jti: payload.jti };
+    claims = { sub: payload.sub, email: payload.email, jti: payload.jti, exp: payload.exp };
   } catch {
     return null;
   }

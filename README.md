@@ -192,7 +192,7 @@ src/
   hash-chain tamper detection, and append-only enforcement.
 
 Built under adversarial review: a fleet of independent agents audited the code
-(99 findings), every one was fixed, then a second fleet tried to *disprove* each
+(99 findings), every one was fixed, then a second fleet tried to _disprove_ each
 fix line-by-line. The gaps they found were closed and re-verified.
 
 ```bash

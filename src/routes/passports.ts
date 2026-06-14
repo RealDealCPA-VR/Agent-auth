@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { and, eq, desc } from 'drizzle-orm';
+import { and, eq, desc, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { createPassport, depositCredential } from '../lib/vault.js';
@@ -32,10 +32,18 @@ const createSchema = z.object({ name: z.string().min(1).max(120) });
 // Metadata must be a small, flat-ish JSON object — cap serialized size to 4 KiB.
 const metadataSchema = z
   .record(z.unknown())
-  .refine((m) => JSON.stringify(m).length <= 4096, 'metadata too large (max 4 KiB)');
+  .refine(
+    (m) => Buffer.byteLength(JSON.stringify(m), 'utf8') <= 4096,
+    'metadata too large (max 4 KiB)',
+  );
 
 const depositSchema = z.object({
-  target: z.string().min(1).max(255),
+  // Hostnames are case-insensitive; normalize so scope matching is consistent.
+  target: z
+    .string()
+    .min(1)
+    .max(255)
+    .transform((s) => s.toLowerCase()),
   label: z.string().min(1).max(120),
   type: z.enum(schema.credentialType.enumValues),
   secret: z.string().min(1).max(8192),
@@ -84,6 +92,7 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
       const q = paginationSchema.safeParse(req.query);
       if (!q.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid pagination', q.error.flatten());
+      const where = eq(schema.passports.principalId, req.human!.sub);
       const rows = await db
         .select({
           id: schema.passports.id,
@@ -91,11 +100,12 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
           createdAt: schema.passports.createdAt,
         })
         .from(schema.passports)
-        .where(eq(schema.passports.principalId, req.human!.sub))
+        .where(where)
         .orderBy(desc(schema.passports.createdAt))
         .limit(q.data.limit)
         .offset(q.data.offset);
-      return page(rows, q.data);
+      const [tc] = await db.select({ value: count() }).from(schema.passports).where(where);
+      return page(rows, q.data, tc!.value);
     },
   );
 
@@ -150,6 +160,7 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
       const q = paginationSchema.safeParse(req.query);
       if (!q.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid pagination', q.error.flatten());
+      const where = eq(schema.credentials.passportId, id);
       const rows = await db
         .select({
           id: schema.credentials.id,
@@ -161,11 +172,12 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
           createdAt: schema.credentials.createdAt,
         })
         .from(schema.credentials)
-        .where(eq(schema.credentials.passportId, id))
+        .where(where)
         .orderBy(desc(schema.credentials.createdAt))
         .limit(q.data.limit)
         .offset(q.data.offset);
-      return page(rows, q.data);
+      const [tc] = await db.select({ value: count() }).from(schema.credentials).where(where);
+      return page(rows, q.data, tc!.value);
     },
   );
 }

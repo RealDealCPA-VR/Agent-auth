@@ -12,7 +12,10 @@ declare module 'fastify' {
 }
 
 function bearer(req: FastifyRequest): string | null {
-  const h = req.headers.authorization;
+  // Node collapses duplicate `authorization` headers to a single string, but
+  // handle the array shape defensively anyway (mirrors x-request-id handling).
+  const raw = req.headers.authorization;
+  const h = Array.isArray(raw) ? raw[0] : raw;
   if (!h || !h.startsWith('Bearer ')) return null;
   return h.slice('Bearer '.length).trim();
 }

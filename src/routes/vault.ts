@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq, like, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, like, notLike, or, type SQL } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
 import { hasScope, allowsTarget } from '../auth/agent.js';
@@ -18,10 +18,19 @@ function targetCondition(scopes: string[]): SQL | undefined {
   const pats = scopes.filter((s) => s.startsWith('target:')).map((s) => s.slice('target:'.length));
   if (pats.length === 0 || pats.includes('*')) return undefined;
   const conds: SQL[] = [];
-  for (const pat of pats) {
+  for (const raw of pats) {
+    const pat = raw.toLowerCase(); // targets are stored lowercase (case-insensitive hosts)
     if (pat.startsWith('*.')) {
-      // Subdomains only (e.g. api.example.com), matching allowsTarget().
-      conds.push(like(schema.credentials.target, `%.${pat.slice(2)}`));
+      // Single-label subdomain only (api.example.com, not a.b.example.com or the
+      // apex) — mirrors matchesTargetPattern(). Host patterns are validated at
+      // issuance to contain no SQL-LIKE metacharacters.
+      const suffix = pat.slice(2);
+      conds.push(
+        and(
+          like(schema.credentials.target, `%.${suffix}`),
+          notLike(schema.credentials.target, `%.%.${suffix}`),
+        )!,
+      );
     } else {
       conds.push(eq(schema.credentials.target, pat));
     }
@@ -78,7 +87,8 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         .limit(q.data.limit)
         .offset(q.data.offset);
 
-      return page(rows, q.data);
+      const [tc] = await db.select({ value: count() }).from(schema.credentials).where(where);
+      return page(rows, q.data, tc!.value);
     },
   );
 

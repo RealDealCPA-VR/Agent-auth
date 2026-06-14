@@ -89,18 +89,29 @@ export function hasScope(scopes: string[], required: string): boolean {
 
 /**
  * Target scoping. Supports exact host (`github.com`), full wildcard (`*`), and
- * subdomain wildcard (`*.example.com` matches `api.example.com` but NOT the apex
- * `example.com` — grant that explicitly). An agent with no `target:` scope is
- * unconstrained; add target scopes to restrict it.
+ * single-label subdomain wildcard (`*.example.com` matches `api.example.com` but
+ * NOT the apex `example.com` and NOT a deeper `a.b.example.com` — grant those
+ * explicitly). An agent with no `target:` scope is unconstrained.
  */
+export function matchesTargetPattern(pattern: string, target: string): boolean {
+  // Hostnames are case-insensitive — compare in lowercase. Targets and patterns
+  // are also normalized to lowercase at storage time; this is defense in depth.
+  const p = pattern.toLowerCase();
+  const t = target.toLowerCase();
+  if (p === '*') return true;
+  if (p.startsWith('*.')) {
+    const suffix = p.slice(2);
+    if (!t.endsWith('.' + suffix)) return false; // requires the dot separator
+    const label = t.slice(0, t.length - suffix.length - 1);
+    return label.length > 0 && !label.includes('.'); // exactly one subdomain label
+  }
+  return p === t;
+}
+
 export function allowsTarget(scopes: string[], target: string): boolean {
   const patterns = scopes
     .filter((s) => s.startsWith('target:'))
     .map((s) => s.slice('target:'.length));
   if (patterns.length === 0) return true;
-  return patterns.some((pat) => {
-    if (pat === '*') return true;
-    if (pat.startsWith('*.')) return target.endsWith(pat.slice(1)); // subdomains only
-    return pat === target;
-  });
+  return patterns.some((pat) => matchesTargetPattern(pat, target));
 }

@@ -43,9 +43,14 @@ export type Pagination = z.infer<typeof paginationSchema>;
 
 export interface Page<T> {
   items: T[];
-  pagination: { limit: number; offset: number; count: number };
+  // `total` is the full count of rows matching the query (not just this page),
+  // so clients know how many pages exist. `returned` is this page's size.
+  pagination: { limit: number; offset: number; total: number; returned: number };
 }
 
-export function page<T>(items: T[], p: Pagination): Page<T> {
-  return { items, pagination: { limit: p.limit, offset: p.offset, count: items.length } };
+export function page<T>(items: T[], p: Pagination, total: number): Page<T> {
+  return {
+    items,
+    pagination: { limit: p.limit, offset: p.offset, total, returned: items.length },
+  };
 }

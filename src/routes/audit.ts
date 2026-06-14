@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { desc, eq, or, inArray } from 'drizzle-orm';
+import { desc, eq, or, inArray, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { verifyAuditChain } from '../lib/audit.js';
@@ -55,7 +55,8 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
         .orderBy(desc(schema.auditEvents.seq))
         .limit(q.data.limit)
         .offset(q.data.offset);
-      return page(events, q.data);
+      const [tc] = await db.select({ value: count() }).from(schema.auditEvents).where(scope);
+      return page(events, q.data, tc!.value);
     },
   );
 

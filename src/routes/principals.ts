@@ -44,10 +44,20 @@ export async function principalRoutes(app: FastifyInstance): Promise<void> {
         .limit(1);
       if (existing.length > 0) return fail(req, reply, 409, 'conflict', 'email already registered');
 
-      const [row] = await db
-        .insert(schema.principals)
-        .values({ email, passwordHash: await hashSecret(password) })
-        .returning({ id: schema.principals.id, email: schema.principals.email });
+      let row;
+      try {
+        [row] = await db
+          .insert(schema.principals)
+          .values({ email, passwordHash: await hashSecret(password) })
+          .returning({ id: schema.principals.id, email: schema.principals.email });
+      } catch (err) {
+        // Concurrent registration of the same email loses the unique-constraint
+        // race (Postgres 23505) — return the same 409 as the pre-check path.
+        if ((err as { code?: string }).code === '23505') {
+          return fail(req, reply, 409, 'conflict', 'email already registered');
+        }
+        throw err;
+      }
 
       await audit({
         action: 'principal.register',
@@ -106,8 +116,8 @@ export async function principalRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const human = req.human!;
-      const expiresAt = new Date(Date.now() + env.JWT_TTL_SECONDS * 1000);
-      await revokeSession(human.jti, human.sub, expiresAt);
+      // Keep the denylist entry exactly until the token's own expiry, no longer.
+      await revokeSession(human.jti, human.sub, new Date(human.exp * 1000));
       await audit({
         action: 'principal.logout',
         success: true,

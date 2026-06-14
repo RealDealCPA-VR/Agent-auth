@@ -53,9 +53,9 @@ export async function depositCredential(opts: {
   const dek = await loadDek(opts.passportId);
   if (!dek) return null;
   const secretBuf = Buffer.from(opts.secret, 'utf8');
+  // Bind the ciphertext to its passport + target so it can't be replayed elsewhere.
+  const aad = Buffer.from(`${opts.passportId}:${opts.target}`);
   try {
-    // Bind the ciphertext to its passport + target so it can't be replayed elsewhere.
-    const aad = Buffer.from(`${opts.passportId}:${opts.target}`);
     const sealed = seal(dek, secretBuf, aad);
     const [row] = await db
       .insert(schema.credentials)
@@ -73,12 +73,15 @@ export async function depositCredential(opts: {
         target: schema.credentials.target,
         label: schema.credentials.label,
         type: schema.credentials.type,
+        metadata: schema.credentials.metadata,
         expiresAt: schema.credentials.expiresAt,
+        createdAt: schema.credentials.createdAt,
       });
     return row!;
   } finally {
     dek.fill(0);
     secretBuf.fill(0); // scrub the plaintext secret from memory
+    aad.fill(0); // scrub for consistency (AAD is non-secret, but keep one pattern)
   }
 }
 
@@ -110,8 +113,8 @@ export async function useCredential(passportId: string, credentialId: string): P
 
   const dek = await loadDek(passportId);
   if (!dek) return { status: 'not_found' };
+  const aad = Buffer.from(`${passportId}:${cred.target}`);
   try {
-    const aad = Buffer.from(`${passportId}:${cred.target}`);
     const plaintextBuf = open(dek, cred.sealed as SealedBox, aad);
     const secret = plaintextBuf.toString('utf8');
     plaintextBuf.fill(0); // scrub the decrypted buffer; the string is the caller's to use
@@ -129,5 +132,6 @@ export async function useCredential(passportId: string, credentialId: string): P
     return { status: 'decrypt_error' };
   } finally {
     dek.fill(0);
+    aad.fill(0); // scrub for consistency (AAD is non-secret)
   }
 }

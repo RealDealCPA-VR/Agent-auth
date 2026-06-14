@@ -1,6 +1,15 @@
 import type { FastifyInstance } from 'fastify';
+import type { LightMyRequestResponse } from 'fastify';
 import { buildServer } from '../src/server.js';
 import { sql } from '../src/db/index.js';
+
+/** Fail fast (and clearly) when a fixture's setup request did not succeed. */
+function ok(res: LightMyRequestResponse, expected: number, what: string): LightMyRequestResponse {
+  if (res.statusCode !== expected) {
+    throw new Error(`${what} expected ${expected} but got ${res.statusCode}: ${res.payload}`);
+  }
+  return res;
+}
 
 /** Build a ready Fastify instance for inject()-based testing. */
 export async function makeApp(): Promise<FastifyInstance> {
@@ -37,7 +46,7 @@ export async function registerPrincipal(
     url: '/v1/principals',
     payload: { email, password },
   });
-  const body = res.json();
+  const body = ok(res, 201, 'registerPrincipal').json();
   return { id: body.id, email, password };
 }
 
@@ -52,7 +61,7 @@ export async function login(
     url: '/v1/auth/login',
     payload: { email, password },
   });
-  return res.json().token;
+  return ok(res, 200, 'login').json().token;
 }
 
 /** Register + login in one step. */
@@ -75,7 +84,7 @@ export async function createPassport(
     headers: auth(token),
     payload: { name },
   });
-  return res.json().id;
+  return ok(res, 201, 'createPassport').json().id;
 }
 
 export async function deposit(
@@ -90,7 +99,7 @@ export async function deposit(
     headers: auth(token),
     payload: body,
   });
-  return res.json();
+  return ok(res, 201, 'deposit').json();
 }
 
 export async function issueAgent(
@@ -106,5 +115,5 @@ export async function issueAgent(
     headers: auth(token),
     payload: { passportId, name, scopes },
   });
-  return res.json();
+  return ok(res, 201, 'issueAgent').json();
 }

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { and, eq, desc } from 'drizzle-orm';
+import { and, eq, desc, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { hashSecret, generateKeySecret, formatApiKey } from '../crypto/secrets.js';
@@ -51,6 +51,12 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         return fail(req, reply, 400, 'invalid_scope', `invalid scopes: ${invalid.join(', ')}`);
       }
 
+      // Normalize target host patterns to lowercase (hostnames are case-insensitive)
+      // so they match credential targets, which are also stored lowercase.
+      const normScopes = scopes.map((s) =>
+        s.startsWith('target:') ? `target:${s.slice('target:'.length).toLowerCase()}` : s,
+      );
+
       const [owned] = await db
         .select({ id: schema.passports.id })
         .from(schema.passports)
@@ -70,7 +76,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
           passportId,
           name,
           secretHash: await hashSecret(secret),
-          scopes,
+          scopes: normScopes,
           expiresAt: expiresAt ?? null,
         })
         .returning({
@@ -85,7 +91,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         principalId: req.human!.sub,
         passportId,
         agentId: row!.id,
-        detail: { scopes },
+        detail: { scopes: normScopes },
         ip: req.ip,
       });
 
@@ -125,7 +131,12 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         .orderBy(desc(schema.agents.createdAt))
         .limit(q.data.limit)
         .offset(q.data.offset);
-      return page(rows, q.data);
+      const [tc] = await db
+        .select({ value: count() })
+        .from(schema.agents)
+        .innerJoin(schema.passports, eq(schema.agents.passportId, schema.passports.id))
+        .where(eq(schema.passports.principalId, req.human!.sub));
+      return page(rows, q.data, tc!.value);
     },
   );
 
