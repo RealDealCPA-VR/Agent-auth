@@ -219,7 +219,13 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         try {
           fp = fingerprintFromPem(certPem);
         } catch {
-          return fail(req, reply, 400, 'invalid_request', 'certPem is not a valid X.509 certificate');
+          return fail(
+            req,
+            reply,
+            400,
+            'invalid_request',
+            'certPem is not a valid X.509 certificate',
+          );
         }
       } else if (fingerprint) {
         fp = normalizeFingerprint(fingerprint);

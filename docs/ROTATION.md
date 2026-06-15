@@ -5,17 +5,18 @@ downtime and no loss of access to existing data. All three follow the same shape
 an **active** key with an id, plus a set of **retired** keys kept only long enough
 for old data/tokens to age out.
 
-| Key | Wraps / signs | Active env | Retired env | Per-record id |
-|-----|---------------|-----------|-------------|---------------|
-| **KEK** (master) | per-passport data keys (DEKs) | `MASTER_KEY` + `MASTER_KEY_ID` | `MASTER_KEYS_RETIRED` | `passports.wrapped_dek.kid` |
-| **JWT** | human session tokens | `JWT_SECRET` + `JWT_KEY_ID` | `JWT_SECRETS_RETIRED` | token header `kid` |
-| **Audit HMAC** | audit hash-chain | `AUDIT_HMAC_SECRET` (or derived from `MASTER_KEY`) + `AUDIT_KEY_ID` | `AUDIT_KEYS_RETIRED` | `audit_events.hash_key_id` |
+| Key              | Wraps / signs                 | Active env                                                          | Retired env           | Per-record id               |
+| ---------------- | ----------------------------- | ------------------------------------------------------------------- | --------------------- | --------------------------- |
+| **KEK** (master) | per-passport data keys (DEKs) | `MASTER_KEY` + `MASTER_KEY_ID`                                      | `MASTER_KEYS_RETIRED` | `passports.wrapped_dek.kid` |
+| **JWT**          | human session tokens          | `JWT_SECRET` + `JWT_KEY_ID`                                         | `JWT_SECRETS_RETIRED` | token header `kid`          |
+| **Audit HMAC**   | audit hash-chain              | `AUDIT_HMAC_SECRET` (or derived from `MASTER_KEY`) + `AUDIT_KEY_ID` | `AUDIT_KEYS_RETIRED`  | `audit_events.hash_key_id`  |
 
 `*_RETIRED` values are JSON objects mapping `kid -> base64-of-32-bytes`, e.g.
 `{"k1":"<old-base64-32B>"}`. They are validated at boot; a malformed value fails
 fast with a clear message.
 
 Generate a fresh 32-byte key:
+
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
@@ -50,6 +51,7 @@ the DEK itself, so every sealed credential stays decryptable throughout.
 > provider (below) so the KEK never lives in app config at all.
 
 ### KMS-backed KEK (no master key in app memory)
+
 Set `KEY_PROVIDER=kms`, `KMS_KEY_ID=<arn|alias>`, `KMS_REGION`, and install the
 optional dependency `@aws-sdk/client-kms`. Rotation is then handled by the KMS key
 policy; `pnpm db:rotate` still re-wraps DEKs to the current `KMS_KEY_ID` if you
@@ -102,7 +104,7 @@ kind: CronJob
 metadata:
   name: agentauth-key-rotate
 spec:
-  schedule: "17 3 * * *"        # 03:17 daily
+  schedule: '17 3 * * *' # 03:17 daily
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
@@ -112,7 +114,7 @@ spec:
           containers:
             - name: rotate
               image: agentauth:latest
-              command: ["pnpm", "db:rotate"]
+              command: ['pnpm', 'db:rotate']
               envFrom:
                 - secretRef:
                     name: agentauth-secrets
@@ -122,5 +124,5 @@ systemd timer equivalent: a `agentauth-rotate.service` running
 `pnpm db:rotate` (with the env file) plus an `agentauth-rotate.timer` on
 `OnCalendar=*-*-* 03:17:00`.
 
-The actual key *material* roll (steps 1–2 above) is a deploy-time action — change
+The actual key _material_ roll (steps 1–2 above) is a deploy-time action — change
 the env, ship, then let the scheduled `db:rotate` converge existing data.

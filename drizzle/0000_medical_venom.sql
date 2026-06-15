@@ -1,5 +1,5 @@
 CREATE TYPE "public"."approval_status" AS ENUM('pending', 'approved', 'denied');--> statement-breakpoint
-CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'agent.issue', 'agent.revoke', 'agent.mtls_bind', 'approval.approve', 'approval.deny', 'oauth.start', 'oauth.capture', 'auth.denied', 'authz.denied');--> statement-breakpoint
+CREATE TYPE "public"."audit_action" AS ENUM('principal.register', 'principal.login', 'principal.logout', 'passport.create', 'credential.deposit', 'credential.use', 'credential.proxy', 'agent.issue', 'agent.revoke', 'agent.mtls_bind', 'approval.approve', 'approval.deny', 'oauth.start', 'oauth.capture', 'auth.denied', 'authz.denied');--> statement-breakpoint
 CREATE TYPE "public"."credential_type" AS ENUM('password', 'oauth_token', 'cookie', 'api_key');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS "credentials" (
 	"type" "credential_type" NOT NULL,
 	"sealed" jsonb NOT NULL,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"injection" jsonb,
 	"expires_at" timestamp with time zone,
 	"max_uses" integer,
 	"use_count" integer DEFAULT 0 NOT NULL,

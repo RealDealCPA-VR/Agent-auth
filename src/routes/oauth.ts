@@ -135,18 +135,14 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const parsed = callbackSchema.safeParse(req.query);
-      if (!parsed.success)
-        return fail(req, reply, 400, 'invalid_request', 'missing code or state');
+      if (!parsed.success) return fail(req, reply, 400, 'invalid_request', 'missing code or state');
 
       const now = new Date();
       const [flow] = await db
         .select()
         .from(schema.oauthFlows)
         .where(
-          and(
-            eq(schema.oauthFlows.state, parsed.data.state),
-            gt(schema.oauthFlows.expiresAt, now),
-          ),
+          and(eq(schema.oauthFlows.state, parsed.data.state), gt(schema.oauthFlows.expiresAt, now)),
         )
         .limit(1);
       if (!flow) return fail(req, reply, 400, 'invalid_state', 'invalid or expired oauth state');
@@ -169,7 +165,13 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
         // Never surface provider internals; leave the flow row to expire so a
         // genuine retry of the same state can't reuse a spent code.
         await db.delete(schema.oauthFlows).where(eq(schema.oauthFlows.id, flow.id));
-        return fail(req, reply, 502, 'oauth_exchange_failed', 'failed to exchange authorization code');
+        return fail(
+          req,
+          reply,
+          502,
+          'oauth_exchange_failed',
+          'failed to exchange authorization code',
+        );
       }
 
       // Seal BOTH tokens together as the credential secret; expose only non-secret

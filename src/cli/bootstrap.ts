@@ -24,7 +24,8 @@ async function main(): Promise<void> {
   // domain (a dotless host like "@local" is rejected and the principal couldn't
   // log in to deposit credentials).
   const email =
-    process.env.AGENTAUTH_INIT_EMAIL ?? `bootstrap+${randomBytes(4).toString('hex')}@agentauth.local`;
+    process.env.AGENTAUTH_INIT_EMAIL ??
+    `bootstrap+${randomBytes(4).toString('hex')}@agentauth.local`;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     console.error(`AGENTAUTH_INIT_EMAIL must be a valid email (got "${email}")`);
     process.exit(1);
@@ -36,7 +37,9 @@ async function main(): Promise<void> {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((s) => (s.startsWith('target:') ? `target:${s.slice('target:'.length).toLowerCase()}` : s));
+    .map((s) =>
+      s.startsWith('target:') ? `target:${s.slice('target:'.length).toLowerCase()}` : s,
+    );
 
   const invalid = scopes.filter((s) => !isValidScope(s));
   if (invalid.length > 0) {
@@ -66,7 +69,12 @@ async function main(): Promise<void> {
   const secret = generateKeySecret();
   const [agent] = await db
     .insert(schema.agents)
-    .values({ passportId: passport.id, name: agentName, secretHash: await hashSecret(secret), scopes })
+    .values({
+      passportId: passport.id,
+      name: agentName,
+      secretHash: await hashSecret(secret),
+      scopes,
+    })
     .returning({ id: schema.agents.id });
   const apiKey = formatApiKey(agent!.id, secret);
 

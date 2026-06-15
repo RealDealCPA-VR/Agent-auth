@@ -8,10 +8,10 @@ Two minimal, end-to-end agent examples — one in **TypeScript**, one in
 3. **use** one credential by its `target` (resolving target → id under the hood),
 4. print a **redacted** confirmation — the raw secret is never printed in full.
 
-| Example                              | SDK                                       |
-| ------------------------------------ | ----------------------------------------- |
-| [`ts-agent/`](./ts-agent)            | [`@agentauth/sdk`](../packages/sdk-ts)    |
-| [`python-agent/`](./python-agent)    | [`agentauth`](../packages/sdk-py)         |
+| Example                           | SDK                                    |
+| --------------------------------- | -------------------------------------- |
+| [`ts-agent/`](./ts-agent)         | [`@agentauth/sdk`](../packages/sdk-ts) |
+| [`python-agent/`](./python-agent) | [`agentauth`](../packages/sdk-py)      |
 
 Both depend on the **local** SDK packages in this monorepo (via `file:` /
 editable install), so you can run them against your own checkout without
@@ -69,11 +69,11 @@ Copy the printed `aa_…` value — that's your `AGENTAUTH_API_KEY`.
 
 ### 3. Environment variables (both examples)
 
-| Variable             | Default                 | Meaning                                    |
-| -------------------- | ----------------------- | ------------------------------------------ |
-| `AGENTAUTH_BASE_URL` | `http://localhost:8080` | AgentAuth API base URL                     |
-| `AGENTAUTH_API_KEY`  | _(required)_            | the agent key `aa_<uuid>.<secret>`         |
-| `TARGET`             | `github.com`            | which credential target to use             |
+| Variable             | Default                 | Meaning                            |
+| -------------------- | ----------------------- | ---------------------------------- |
+| `AGENTAUTH_BASE_URL` | `http://localhost:8080` | AgentAuth API base URL             |
+| `AGENTAUTH_API_KEY`  | _(required)_            | the agent key `aa_<uuid>.<secret>` |
+| `TARGET`             | `github.com`            | which credential target to use     |
 
 ```bash
 export AGENTAUTH_BASE_URL=http://localhost:8080
@@ -129,7 +129,7 @@ Same redacted output as above. The Python SDK requires Python 3.9+ and `httpx`
 ## Notes
 
 - **Secrets are never printed in full.** Both examples redact to `length + 4-char
-  prefix`. Treat `used.secret` / `used['secret']` as write-once: hand it to the
+prefix`. Treat `used.secret` / `used['secret']` as write-once: hand it to the
   downstream call and never log or persist it.
 - If a credential's policy **requires human approval**, `useCredential` raises
   `ApprovalPendingError` (HTTP 202). Approve it in the admin console / via the

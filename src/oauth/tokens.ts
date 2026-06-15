@@ -78,10 +78,7 @@ export async function exchangeCode(
 }
 
 /** Refresh an access token using a refresh_token. Throws on non-2xx / no token. */
-export async function refreshToken(
-  provider: OAuthProvider,
-  current: TokenSet,
-): Promise<TokenSet> {
+export async function refreshToken(provider: OAuthProvider, current: TokenSet): Promise<TokenSet> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: current.refresh_token!,

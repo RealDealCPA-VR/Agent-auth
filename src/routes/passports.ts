@@ -37,6 +37,19 @@ const metadataSchema = z
     'metadata too large (max 4 KiB)',
   );
 
+// How the secret is injected into a server-side proxied request (proxy mode).
+const injectionSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('bearer') }),
+  z.object({ mode: z.literal('basic') }),
+  z.object({ mode: z.literal('cookie') }),
+  z.object({
+    mode: z.literal('header'),
+    name: z.string().min(1).max(64),
+    prefix: z.string().max(64).optional(),
+  }),
+  z.object({ mode: z.literal('query'), name: z.string().min(1).max(64) }),
+]);
+
 const depositSchema = z.object({
   // Hostnames are case-insensitive; normalize so scope matching is consistent.
   target: z
@@ -48,6 +61,7 @@ const depositSchema = z.object({
   type: z.enum(schema.credentialType.enumValues),
   secret: z.string().min(1).max(8192),
   metadata: metadataSchema.optional(),
+  injection: injectionSchema.optional(),
   expiresAt: z.coerce.date().optional(),
   // Optional usage policy.
   maxUses: z.number().int().positive().max(1_000_000).optional(),

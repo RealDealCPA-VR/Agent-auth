@@ -67,7 +67,7 @@ export async function authenticateAgent(apiKey: string): Promise<AuthResult> {
 // --- Scopes -----------------------------------------------------------------
 
 /** The complete set of grantable non-target scopes. Anything else is rejected. */
-export const ALLOWED_SCOPES = ['vault:read', 'vault:use'] as const;
+export const ALLOWED_SCOPES = ['vault:read', 'vault:use', 'vault:proxy'] as const;
 export type AllowedScope = (typeof ALLOWED_SCOPES)[number];
 
 const HOST_RE =

@@ -5,6 +5,7 @@ import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
 import { requestOrConsume } from './approvals.js';
 import { getProvider } from '../oauth/registry.js';
 import { needsRefresh, refreshToken, type TokenSet } from '../oauth/tokens.js';
+import type { Injection } from './proxy.js';
 
 /**
  * Vault operations. All DEK material is unwrapped transiently per-call and never
@@ -49,6 +50,7 @@ export async function depositCredential(opts: {
   allowedFrom?: Date | null;
   allowedUntil?: Date | null;
   requireApproval?: boolean;
+  injection?: Injection | null;
 }) {
   const dek = await loadDek(opts.passportId);
   if (!dek) return null;
@@ -66,6 +68,7 @@ export async function depositCredential(opts: {
         type: opts.type,
         sealed,
         metadata: opts.metadata ?? {},
+        injection: opts.injection ?? null,
         expiresAt: opts.expiresAt ?? null,
         maxUses: opts.maxUses ?? null,
         allowedFrom: opts.allowedFrom ?? null,
@@ -98,6 +101,7 @@ export type UseResult =
       type: string;
       metadata: unknown;
       expiresAt: Date | null;
+      injection: Injection | null;
       id: string;
     }
   | { status: 'not_found' }
@@ -152,7 +156,9 @@ async function freshOauthAccessToken(
   if (!provider || !tokens.refresh_token) return tokens.access_token;
 
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(${OAUTH_REFRESH_LOCK_NS}, ${credLockKey(cred.id)})`);
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(${OAUTH_REFRESH_LOCK_NS}, ${credLockKey(cred.id)})`,
+    );
 
     // Re-read under the lock: a concurrent winner may have already refreshed.
     const [fresh] = await tx
@@ -162,7 +168,9 @@ async function freshOauthAccessToken(
       .limit(1);
     if (fresh) {
       try {
-        const current = JSON.parse(open(dek, fresh.sealed as SealedBox, aad).toString('utf8')) as TokenSet;
+        const current = JSON.parse(
+          open(dek, fresh.sealed as SealedBox, aad).toString('utf8'),
+        ) as TokenSet;
         if (!needsRefresh(current)) return current.access_token;
         tokens = current;
       } catch {
@@ -182,7 +190,11 @@ async function freshOauthAccessToken(
       .update(schema.credentials)
       .set({
         sealed: reSealed,
-        metadata: { provider: provider.name, scope: updated.scope, tokenExpiresAt: updated.expires_at },
+        metadata: {
+          provider: provider.name,
+          scope: updated.scope,
+          tokenExpiresAt: updated.expires_at,
+        },
       })
       .where(eq(schema.credentials.id, cred.id));
     return updated.access_token;
@@ -277,6 +289,7 @@ export async function useCredential(
       type: cred.type,
       metadata: cred.metadata,
       expiresAt: cred.expiresAt,
+      injection: (cred.injection ?? null) as Injection | null,
       secret,
     };
   } catch {

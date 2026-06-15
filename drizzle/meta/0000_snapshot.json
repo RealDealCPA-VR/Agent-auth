@@ -1,5 +1,5 @@
 {
-  "id": "40a21ab9-78a5-4e2d-acef-c3b57a3eb1fc",
+  "id": "d93a14fb-9cbb-4467-b69e-a7b52ea4f316",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -526,6 +526,12 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "injection": {
+          "name": "injection",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp with time zone",
@@ -913,6 +919,7 @@
         "passport.create",
         "credential.deposit",
         "credential.use",
+        "credential.proxy",
         "agent.issue",
         "agent.revoke",
         "agent.mtls_bind",

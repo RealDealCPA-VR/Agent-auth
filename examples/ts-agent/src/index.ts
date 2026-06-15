@@ -12,11 +12,7 @@
  * See ../README.md for how to boot the server and mint an agent key.
  */
 
-import {
-  AgentAuthClient,
-  AgentAuthError,
-  ApprovalPendingError,
-} from '@agentauth/sdk';
+import { AgentAuthClient, AgentAuthError, ApprovalPendingError } from '@agentauth/sdk';
 
 /** Show a secret without leaking it: length + a tiny prefix only. */
 function redact(secret: string): string {

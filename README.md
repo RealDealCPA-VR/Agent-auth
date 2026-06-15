@@ -120,6 +120,7 @@ cp .env.example .env             # + MASTER_KEY / JWT_SECRET as above
 pnpm db:generate && pnpm db:migrate
 pnpm dev                         # http://localhost:8080  •  docs at /docs
 ```
+
 </details>
 
 Interactive OpenAPI docs are served at **`/docs`**. Liveness `/healthz`,

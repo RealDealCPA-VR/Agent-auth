@@ -186,7 +186,12 @@ export async function deny(
     .update(schema.approvalRequests)
     // Refresh TTL from the decision (like approve) so a denial sticks for the
     // full window instead of expiring at the original request's creation TTL.
-    .set({ status: 'denied', decidedAt: new Date(now), decidedBy: principalId, expiresAt: ttlFromNow(now) })
+    .set({
+      status: 'denied',
+      decidedAt: new Date(now),
+      decidedBy: principalId,
+      expiresAt: ttlFromNow(now),
+    })
     .where(
       and(
         eq(schema.approvalRequests.id, requestId),

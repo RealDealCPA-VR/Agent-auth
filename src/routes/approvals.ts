@@ -67,12 +67,8 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
             .limit(q.data.limit)
             .offset(q.data.offset),
         async (tx) =>
-          (
-            await tx
-              .select({ value: count() })
-              .from(schema.approvalRequests)
-              .where(where)
-          )[0]!.value,
+          (await tx.select({ value: count() }).from(schema.approvalRequests).where(where))[0]!
+            .value,
       );
     },
   );

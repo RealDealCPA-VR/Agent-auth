@@ -120,6 +120,20 @@ const schema = z
     // Max JSON body size in bytes.
     BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(65536),
 
+    // --- Proxy mode (server-side credential injection; secret never reaches the agent) ---
+    PROXY_TIMEOUT_MS: z.coerce.number().int().positive().max(120000).default(15000),
+    PROXY_MAX_RESPONSE_BYTES: z.coerce.number().int().positive().default(5_242_880), // 5 MiB
+    // Allow proxying to http:// targets (default https-only; loopback may use http).
+    PROXY_ALLOW_HTTP: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+    // Allow proxying to private/loopback/link-local hosts (turns off the SSRF guard).
+    PROXY_ALLOW_PRIVATE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
       .default('info'),

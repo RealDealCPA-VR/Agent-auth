@@ -70,6 +70,7 @@ status table + Handoff Log below before finishing.
 - FINAL: 194 tests across monorepo (server 127, sdk-ts 30, sdk-py 26, web 11); typecheck/lint/prod build/docker build all green. ALL 20 ROADMAP TASKS COMPLETE.
 
 ## Plug-and-play pass (2026-06-15)
+
 - P1 DONE (orch): full-stack `docker compose up` — added `app` service (build, depends_on db healthy, env_file .env, DATABASE_URL=db:5432 override, command `node dist/db/migrate.js && node dist/index.js`, port 8080). Verified: build+up → /readyz ready. Caught+fixed a real blocker: .env had a UTF-8 BOM that breaks compose env_file (strip to UTF-8 no-BOM; noted in README/.env.example).
 - P2 DONE (orch): bootstrap CLI src/cli/bootstrap.ts + `pnpm agentauth:init` — creates principal+passport+agent, prints a ready-to-use agent API key + base URL + deposit hint. Fixed: default email must be a valid domain (@agentauth.local, not @local) or the principal can't log in (API .email() rejects dotless hosts) — added validation.
 - P3 DONE (agent): packages/mcp-server — stdio MCP server (@modelcontextprotocol/sdk 1.29) exposing list_credentials + use_credential, self-contained fetch client, 8 vitest, README w/ Claude Desktop config. VERIFIED LIVE: MCP client spawned the server against the running stack and use_credential returned the real secret.

@@ -61,11 +61,7 @@ async function setup() {
     type: 'password',
     secret: SECRET,
   });
-  const agent = await h.issueAgent(app, token, passportId, [
-    'vault:read',
-    'vault:use',
-    'target:*',
-  ]);
+  const agent = await h.issueAgent(app, token, passportId, ['vault:read', 'vault:use', 'target:*']);
   return { token, passportId, credId: cred.id, agentId: agent.id };
 }
 
@@ -179,9 +175,7 @@ describe('mTLS binding (issuance)', () => {
     const { token, agentId } = await setup();
     const pems = selfsigned.generate([{ name: 'commonName', value: 'agent.test' }], { days: 1 });
 
-    const expected = new X509Certificate(pems.cert).fingerprint256
-      .replace(/:/g, '')
-      .toLowerCase();
+    const expected = new X509Certificate(pems.cert).fingerprint256.replace(/:/g, '').toLowerCase();
     expect(mtls.fingerprintFromPem(pems.cert)).toBe(expected);
 
     const res = await bind(token, agentId, { certPem: pems.cert });

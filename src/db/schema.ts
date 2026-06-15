@@ -72,6 +72,11 @@ export const credentials = pgTable(
     sealed: jsonb('sealed').notNull(),
     // Non-secret hints (username, scopes, expiry) — safe to expose.
     metadata: jsonb('metadata').notNull().default({}),
+    // How to inject the secret into a server-side proxied request (proxy mode).
+    // null => a sensible default per credential type. Shape:
+    //   { mode:'bearer' } | { mode:'basic' } | { mode:'cookie' }
+    //   | { mode:'header', name, prefix? } | { mode:'query', name }
+    injection: jsonb('injection'),
     // Optional expiry; expired credentials are treated as unavailable.
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     // --- Usage policy (all optional) ---
@@ -216,6 +221,7 @@ export const auditAction = pgEnum('audit_action', [
   'passport.create',
   'credential.deposit',
   'credential.use',
+  'credential.proxy',
   'agent.issue',
   'agent.revoke',
   'agent.mtls_bind',
