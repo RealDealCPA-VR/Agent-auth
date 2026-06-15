@@ -1,0 +1,4 @@
+# Install the local AgentAuth Python SDK (editable) from the monorepo.
+# From examples/python-agent/, with a venv active:
+#   pip install -r requirements.txt
+-e ../../packages/sdk-py

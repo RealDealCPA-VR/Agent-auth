@@ -1,0 +1,19 @@
+{
+  "name": "agentauth-example-ts-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable example: an agent that lists and uses a credential via the AgentAuth TypeScript SDK.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@agentauth/sdk": "file:../../packages/sdk-ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

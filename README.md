@@ -95,20 +95,32 @@ no stack-trace leakage · fail-fast secret validation (won't even boot insecure)
 
 ---
 
-## ⚡ Quickstart (60 seconds)
+## ⚡ Quickstart — one command (Docker)
+
+```bash
+cp .env.example .env
+node -e "console.log('MASTER_KEY='+require('crypto').randomBytes(32).toString('base64'))" >> .env
+node -e "console.log('JWT_SECRET='+require('crypto').randomBytes(32).toString('base64'))" >> .env
+# ↑ edit .env so each key appears once. Save .env as UTF-8 **without a BOM**.
+
+docker compose up --build        # app + db + auto-migrate → http://localhost:8080
+pnpm agentauth:init              # prints a ready-to-use AGENT API KEY + base URL
+```
+
+That's it: `docker compose up` brings up the database, applies migrations, and
+serves the API; `agentauth:init` mints a principal, a passport, and an agent key
+you can hand straight to an agent (via the **MCP server**, an **SDK**, or raw HTTP).
+
+<details><summary>Local dev (no Docker for the app)</summary>
 
 ```bash
 pnpm install
 pnpm db:up                       # Postgres in Docker (port 5433)
-
-cp .env.example .env
-node -e "console.log('MASTER_KEY='+require('crypto').randomBytes(32).toString('base64'))" >> .env
-node -e "console.log('JWT_SECRET='+require('crypto').randomBytes(32).toString('base64'))" >> .env
-# ↑ edit .env so each key appears once
-
+cp .env.example .env             # + MASTER_KEY / JWT_SECRET as above
 pnpm db:generate && pnpm db:migrate
 pnpm dev                         # http://localhost:8080  •  docs at /docs
 ```
+</details>
 
 Interactive OpenAPI docs are served at **`/docs`**. Liveness `/healthz`,
 readiness `/readyz`, Prometheus metrics `/metrics`.
@@ -217,9 +229,11 @@ single request.
 
 ## 🧩 Ecosystem
 
+- **MCP server** — [`packages/mcp-server`](./packages/mcp-server): drop-in Model Context Protocol server exposing `list_credentials` + `use_credential` tools. Point any MCP-capable agent (Claude Desktop, etc.) at it with `AGENTAUTH_API_KEY` and your agents get the vault as tools — **zero code**.
 - **TypeScript SDK** — [`packages/sdk-ts`](./packages/sdk-ts): `new AgentAuthClient({ baseUrl, apiKey })` then `await client.useCredential('github.com')`. Plus a `HumanClient` for the management API.
 - **Python SDK** — [`packages/sdk-py`](./packages/sdk-py): the same surface (`AgentAuthClient`, `HumanClient`) over `httpx`.
 - **Admin web UI** — [`web/`](./web): a Next.js console for login, passports, credential deposit, agent issuance/revocation, the approvals queue, OAuth connect, and the audit trail.
+- **Runnable examples** — [`examples/`](./examples): copy-paste TS + Python agents that fetch and use a credential.
 
 ## ✅ What ships today
 

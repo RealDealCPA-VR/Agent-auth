@@ -17,5 +17,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # The full app. `docker compose up` builds it, waits for the db, applies
+  # migrations, then serves on http://localhost:8080. Requires a .env with
+  # MASTER_KEY and JWT_SECRET (see .env.example).
+  app:
+    build: .
+    container_name: agentauth-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Talk to the db over the compose network (overrides any .env DATABASE_URL).
+      DATABASE_URL: postgres://agentauth:agentauth@db:5432/agentauth
+      DATABASE_SSL: disable
+      HOST: 0.0.0.0
+      PORT: '8080'
+    command: ['sh', '-c', 'node dist/db/migrate.js && node dist/index.js']
+    ports:
+      - '8080:8080'
+
 volumes:
   agentauth_pgdata:

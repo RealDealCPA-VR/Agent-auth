@@ -28,8 +28,10 @@ dependencies = ["httpx>=0.24,<1"]
 test = ["pytest>=7", "respx>=0.20", "pytest-asyncio>=0.21"]
 
 [project.urls]
-Homepage = "https://github.com/agentauth/agentauth"
-Source = "https://github.com/agentauth/agentauth/tree/main/packages/sdk-py"
+Homepage = "https://github.com/RealDealCPA-VR/Agent-auth"
+Repository = "https://github.com/RealDealCPA-VR/Agent-auth"
+Source = "https://github.com/RealDealCPA-VR/Agent-auth/tree/main/packages/sdk-py"
+Issues = "https://github.com/RealDealCPA-VR/Agent-auth/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agentauth"]

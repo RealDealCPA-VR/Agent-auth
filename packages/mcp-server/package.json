@@ -1,0 +1,43 @@
+{
+  "name": "@agentauth/mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol (MCP) server for AgentAuth — exposes your agent credential vault as MCP tools (list_credentials + use_credential) so any MCP-capable agent (Claude Desktop, etc.) can fetch credentials with zero code.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "agentauth-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "agentauth",
+    "mcp",
+    "model-context-protocol",
+    "credentials",
+    "vault",
+    "ai-agents",
+    "secrets",
+    "claude"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

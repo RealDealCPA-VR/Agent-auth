@@ -27,6 +27,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:rotate": "tsx src/db/rotate-keys.ts",
+    "agentauth:init": "tsx src/cli/bootstrap.ts",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "test": "vitest run",
