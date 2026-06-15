@@ -355,6 +355,143 @@ def test_use_credential_by_id_non_404_error_propagates():
 
 
 # --------------------------------------------------------------------------
+# AgentAuthClient — proxy mode
+# --------------------------------------------------------------------------
+
+def test_proxy_by_id_posts_proxy_path():
+    seen: Dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["body"] = body_of(request)
+        assert request.url.path == "/v1/vault/credentials/c1/proxy"
+        assert request.method == "POST"
+        return ok({"status": 200, "headers": {"content-type": "application/json"},
+                   "body": '{"ok":true}'})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    out = client.proxy(
+        "c1",
+        method="POST",
+        path="/repos/me/x/issues",
+        query={"state": "open"},
+        headers={"accept": "application/vnd.github+json"},
+        body='{"title":"hi"}',
+    )
+    assert out["status"] == 200
+    assert out["body"] == '{"ok":true}'
+    assert seen["body"] == {
+        "method": "POST",
+        "path": "/repos/me/x/issues",
+        "query": {"state": "open"},
+        "headers": {"accept": "application/vnd.github+json"},
+        "body": '{"title":"hi"}',
+    }
+
+
+def test_proxy_omits_none_fields_and_defaults():
+    seen: Dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        assert request.url.path == "/v1/vault/credentials/c1/proxy"
+        return ok({"status": 204, "headers": {}, "body": ""})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    client.proxy("c1")
+    # Defaults applied for method/path; optional fields omitted entirely.
+    assert seen["body"] == {"method": "GET", "path": "/"}
+    assert "query" not in seen["body"]
+    assert "headers" not in seen["body"]
+    assert "body" not in seen["body"]
+
+
+def test_proxy_by_target_resolves_then_proxies():
+    """A target that isn't an id: proxy 404s, then we list, resolve, and proxy."""
+    calls: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        # 1) direct proxy of the literal "github.com" -> 404 (not an id)
+        if request.url.path == "/v1/vault/credentials/github.com/proxy":
+            return envelope_error(404, "not_found", "no such credential")
+        # 2) listing to resolve the target
+        if request.url.path == "/v1/vault/credentials":
+            return ok({
+                "items": [
+                    {"id": "c-other", "target": "gitlab.com"},
+                    {"id": "c-gh", "target": "github.com"},
+                ],
+                "pagination": {"limit": 100, "offset": 0, "total": 2, "returned": 2},
+            })
+        # 3) proxy of the resolved id
+        if request.url.path == "/v1/vault/credentials/c-gh/proxy":
+            return ok({"status": 200, "headers": {}, "body": "resolved"})
+        raise AssertionError(request.url.path)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    out = client.proxy("github.com", path="/user")
+    assert out["body"] == "resolved"
+    assert calls == [
+        "POST /v1/vault/credentials/github.com/proxy",
+        "GET /v1/vault/credentials",
+        "POST /v1/vault/credentials/c-gh/proxy",
+    ]
+
+
+def test_proxy_by_id_non_404_error_propagates():
+    """A 403 (e.g. missing vault:proxy) must NOT trigger target resolution."""
+    calls: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return envelope_error(403, "forbidden", "scope vault:proxy required")
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    with pytest.raises(AgentAuthError) as ei:
+        client.proxy("c1")
+    assert ei.value.status == 403
+    assert ei.value.code == "forbidden"
+    assert calls == ["/v1/vault/credentials/c1/proxy"]
+
+
+def test_proxy_202_raises_approval_pending():
+    from agentauth import ApprovalPendingError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The proxy endpoint returns 202 when the target requires approval.
+        return httpx.Response(
+            202, json={"status": "pending", "requestId": "req_77",
+                       "message": "awaiting approval"}
+        )
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    with pytest.raises(ApprovalPendingError) as exc:
+        client.proxy("33333333-3333-4333-8333-333333333333", path="/me")
+    assert exc.value.status == 202
+    assert exc.value.code == "approval_pending"
+    assert exc.value.request_id == "req_77"
+
+
+def test_deposit_credential_includes_injection_when_present():
+    seen: Dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        return ok({"id": "c9"}, status=201)
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    client.deposit_credential(
+        "pp1", target="api.x.com", label="X", type="api_key", secret="s",
+        injection={"mode": "header", "name": "X-Api-Key", "prefix": "Token "},
+    )
+    assert seen["body"]["injection"] == {
+        "mode": "header", "name": "X-Api-Key", "prefix": "Token ",
+    }
+
+
+# --------------------------------------------------------------------------
 # Error mapping
 # --------------------------------------------------------------------------
 

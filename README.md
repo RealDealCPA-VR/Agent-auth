@@ -85,6 +85,30 @@ Agents are bound to one passport and gated by **scopes** (`vault:read`, `vault:u
 and **target globs** (`target:github.com`, `target:*.internal`). A narrowly-scoped
 agent can't even _enumerate_ the credentials it isn't allowed to touch.
 
+### 🚇 Proxy mode — the secret never reaches the agent
+
+`use` hands the unsealed secret back to the agent. **Proxy mode never does.**
+With `POST /v1/vault/credentials/:id/proxy`, AgentAuth makes the downstream call
+**server-side**, injects the credential into that request, and returns only the
+downstream response — with the secret **redacted from the body**. The agent
+chooses the method/path/query/headers/body; the **host is pinned** to the
+credential's target server-side, so the agent can't repoint the request to
+exfiltrate the secret.
+
+```bash
+# Agent presents its own key; AgentAuth calls github.com with the sealed token injected.
+curl -s $BASE/v1/vault/credentials/$CRED/proxy -X POST \
+  -H "authorization: Bearer $APIKEY" -H 'content-type: application/json' \
+  -d '{"method":"GET","path":"/user","headers":{"accept":"application/vnd.github+json"}}'
+# → { "status": 200, "headers": {...}, "body": "{...}" }   the raw token is never in the response
+```
+
+This needs the **`vault:proxy`** scope. Injection is configured **per credential**
+at deposit time (`injection`: `bearer` · `basic` · `cookie` · `header` ·
+`query`), so AgentAuth knows exactly where the secret goes. Because proxy mode
+returns no secret, you can issue **proxy-only agents** — grant `vault:proxy`
+**without** `vault:use` and the agent can act through credentials it can never read.
+
 ### 🛡️ Hardened on every layer
 
 Argon2id password & key hashing · constant-time login (no user enumeration) ·
@@ -170,6 +194,7 @@ curl -s $BASE/v1/agents/<agentId>/revoke -X POST -H "authorization: Bearer $TOKE
 | Deposit   | `POST/GET /v1/passports/:id/credentials`                             | Human     |
 | Agents    | `POST/GET /v1/agents`, `POST /v1/agents/:id/revoke`                  | Human     |
 | **Vault** | `GET /v1/vault/credentials`, `POST /v1/vault/credentials/:id/use`    | **Agent** |
+| **Proxy** | `POST /v1/vault/credentials/:id/proxy` (secret-free; `vault:proxy`)  | **Agent** |
 | Audit     | `GET /v1/audit`, `GET /v1/audit/verify`                              | Human     |
 | Ops       | `GET /healthz`, `/readyz`, `/metrics`, `/docs`                       | —         |
 

@@ -136,6 +136,80 @@ describe('AgentAuthClient.useCredential by id (UUID)', () => {
   });
 });
 
+// --- AgentAuthClient: proxy mode --------------------------------------------
+
+describe('AgentAuthClient.proxy by id (UUID)', () => {
+  it('POSTs the proxy path with the request body and bearer key', async () => {
+    const id = '66666666-6666-4666-8666-666666666666';
+    const proxyResp = {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: '{"login":"octocat"}',
+    };
+    const { calls } = stubFetch([{ body: proxyResp }]);
+
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const result = await aa.proxy(id, { method: 'GET', path: '/user' });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('{"login":"octocat"}');
+    // Only one call — no listing needed because the input is a UUID.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${id}/proxy`);
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${API_KEY}`);
+    expect(calls[0]?.body).toEqual({ method: 'GET', path: '/user' });
+  });
+
+  it('defaults an empty request to GET /', async () => {
+    const id = '66666666-6666-4666-8666-666666666666';
+    const { calls } = stubFetch([{ body: { status: 200, headers: {}, body: '' } }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    await aa.proxy(id);
+    expect(calls[0]?.body).toEqual({ method: 'GET', path: '/' });
+  });
+});
+
+describe('AgentAuthClient.proxy by target', () => {
+  it('resolves a non-UUID target via listing, then proxies the matched id', async () => {
+    const list: Page<VaultCredential> = {
+      items: [
+        { id: 'cA', target: 'gitlab.com', label: 'GL', type: 'api_key', metadata: {}, expiresAt: null },
+        { id: 'cB', target: 'github.com', label: 'GH', type: 'api_key', metadata: {}, expiresAt: null },
+      ],
+      pagination: { limit: 200, offset: 0, total: 2, returned: 2 },
+    };
+    const proxyResp = { status: 201, headers: {}, body: 'ok' };
+    const { calls } = stubFetch([{ body: list }, { body: proxyResp }]);
+
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const result = await aa.proxy('github.com', { method: 'POST', path: '/repos', body: '{}' });
+
+    expect(result.status).toBe(201);
+    expect(calls).toHaveLength(2);
+    // First call lists; second proxies the matched id (cB), not the target.
+    expect(calls[0]?.url).toContain('/v1/vault/credentials?limit=200');
+    expect(calls[1]?.method).toBe('POST');
+    expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/proxy`);
+    expect(calls[1]?.body).toEqual({ method: 'POST', path: '/repos', body: '{}' });
+  });
+});
+
+describe('AgentAuthClient.proxy approval-pending (202)', () => {
+  it('throws a typed ApprovalPendingError instead of a bogus result', async () => {
+    const id = '77777777-7777-4777-8777-777777777777';
+    stubFetch([{ status: 202, body: { status: 'pending', requestId: 'req-42' } }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const err = await aa.proxy(id, { path: '/user' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApprovalPendingError);
+    const e = err as ApprovalPendingError;
+    expect(e.status).toBe(202);
+    expect(e.code).toBe('approval_pending');
+    expect(e.requestId).toBe('req-42');
+    expect(e.isApprovalPending).toBe(true);
+  });
+});
+
 // --- AgentAuthClient: target resolution -------------------------------------
 
 describe('AgentAuthClient.useCredential approval-pending (202)', () => {

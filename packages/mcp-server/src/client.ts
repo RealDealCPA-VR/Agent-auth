@@ -54,6 +54,39 @@ export interface UsedCredential extends VaultCredential {
   secret: string;
 }
 
+/** The HTTP methods the proxy endpoint accepts. */
+export type ProxyMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+
+/**
+ * A proxied downstream request. The host is pinned server-side to the
+ * credential's target — the agent only controls method/path/query/headers/body.
+ */
+export interface ProxyRequest {
+  /** HTTP method for the downstream request (default 'GET' server-side). */
+  method?: ProxyMethod;
+  /** Path on the pinned host; must start with '/' (default '/' server-side). */
+  path?: string;
+  /** Optional query parameters appended to the path. */
+  query?: Record<string, string>;
+  /** Optional request headers (the credential is injected server-side). */
+  headers?: Record<string, string>;
+  /** Optional request body (already serialized). */
+  body?: string;
+}
+
+/**
+ * The downstream response surfaced by the proxy. The injected secret is never
+ * present here — it is redacted server-side before the body is returned.
+ */
+export interface ProxyResponse {
+  /** The downstream HTTP status code. */
+  status: number;
+  /** The downstream response headers. */
+  headers: Record<string, string>;
+  /** The downstream response body (secret redacted). */
+  body: string;
+}
+
 /** The server's error envelope shape. */
 interface ErrorEnvelope {
   error?: {
@@ -194,6 +227,37 @@ export class AgentAuthClient {
   }
 
   /**
+   * Make a downstream HTTP request server-side with the credential injected,
+   * identified either by credential **id** (a UUID — used directly) or by
+   * **target** (any other string, resolved to an id via the listing).
+   *
+   * AgentAuth pins the host to the credential's target and injects the secret
+   * server-side; the raw secret NEVER appears in the returned response. Only the
+   * downstream `{ status, headers, body }` (secret redacted) is returned.
+   *
+   * @throws {AgentAuthClientError} 404 if no credential matches the target; plus
+   *   the usual 400/403/410/429/502/504/503 from the proxy endpoint.
+   * @throws {ApprovalPendingError} when the credential requires human approval.
+   */
+  async proxy(idOrTarget: string, request: ProxyRequest = {}): Promise<ProxyResponse> {
+    if (!idOrTarget) {
+      throw new TypeError('AgentAuth MCP: proxy() requires an id or target');
+    }
+    const id = isUuid(idOrTarget) ? idOrTarget : await this.resolveTarget(idOrTarget);
+    const body: Record<string, unknown> = {};
+    if (request.method !== undefined) body.method = request.method;
+    if (request.path !== undefined) body.path = request.path;
+    if (request.query !== undefined) body.query = request.query;
+    if (request.headers !== undefined) body.headers = request.headers;
+    if (request.body !== undefined) body.body = request.body;
+    return this.request<ProxyResponse>({
+      method: 'POST',
+      path: `/v1/vault/credentials/${encodeURIComponent(id)}/proxy`,
+      body,
+    });
+  }
+
+  /**
    * Resolve a target string to a single credential id by scanning the listing.
    * Pages (at {@link MAX_PAGE_SIZE}) until a match is found or the listing is
    * exhausted. If more than one credential shares the target, the first match
@@ -223,6 +287,7 @@ export class AgentAuthClient {
     method: 'GET' | 'POST';
     path: string;
     query?: Record<string, string | number | undefined>;
+    body?: unknown;
   }): Promise<T> {
     const url = new URL(this.baseUrl + args.path);
     if (args.query) {
@@ -238,9 +303,15 @@ export class AgentAuthClient {
       authorization: this.authHeader,
     };
 
+    const init: RequestInit = { method: args.method, headers };
+    if (args.body !== undefined) {
+      headers['content-type'] = 'application/json';
+      init.body = JSON.stringify(args.body);
+    }
+
     let res: Response;
     try {
-      res = await this.fetchImpl(url.toString(), { method: args.method, headers });
+      res = await this.fetchImpl(url.toString(), init);
     } catch (cause) {
       // Network-level failure (DNS, refused, aborted). Surface as status 0 so
       // callers can branch on a typed error rather than a raw TypeError.

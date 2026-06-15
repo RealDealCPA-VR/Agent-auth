@@ -46,6 +46,54 @@ for c in client.list_credentials()["items"]:
 paging the agent's visible credentials (the data plane has no server-side target
 lookup). A non-404 error (e.g. `403 forbidden`) is raised as-is — no fallback.
 
+## Proxy mode (the secret never leaves the vault)
+
+Even better than receiving the unsealed secret: don't receive it at all. With
+`proxy()`, AgentAuth makes the downstream request **server-side** against the
+credential's pinned target and injects the secret for you — the raw secret never
+appears in the response. The agent only controls the method, path, query,
+headers, and body; the host is fixed to the credential's target.
+
+```python
+from agentauth import AgentAuthClient
+
+client = AgentAuthClient("https://api.agentauth.dev", "aa_uuid.secret")
+
+# By id or by target — resolved exactly like use_credential().
+res = client.proxy(
+    "github.com",
+    method="POST",
+    path="/repos/me/app/issues",          # must start with "/"
+    query={"per_page": "1"},               # optional
+    headers={"accept": "application/vnd.github+json"},  # optional
+    body='{"title":"filed by my agent"}',  # optional
+)
+print(res["status"])    # downstream status, e.g. 201
+print(res["headers"])   # downstream response headers (secret redacted)
+print(res["body"])      # downstream response body (secret redacted)
+```
+
+The agent key needs the **`vault:proxy`** scope. Proxy errors follow the same
+`AgentAuthError` contract: `403` (missing `vault:proxy` / forbidden target),
+`400` (invalid path), `410` (expired/window), `429` (use-limit reached), `502`
+(upstream / OAuth refresh failed), `504` (timeout). A `202` (approval required)
+raises `ApprovalPendingError`.
+
+How the secret is injected is set at **deposit** time via the optional
+`injection` argument:
+
+```python
+client.deposit_credential(
+    passport["id"], target="api.example.com", label="X", type="api_key",
+    secret="sk_live_...",
+    injection={"mode": "header", "name": "X-Api-Key", "prefix": "Token "},
+    # also: {"mode": "bearer"} | {"mode": "basic"} | {"mode": "cookie"}
+    #       | {"mode": "query", "name": "api_key"}
+)
+```
+
+Defaults to `bearer` (or `cookie` for `type="cookie"`) when omitted.
+
 ## The human side (management)
 
 ```python
@@ -123,7 +171,8 @@ with AgentAuthClient(base_url, api_key) as client:
 `list_passports`, `deposit_credential`, `list_credentials`, `issue_agent`,
 `list_agents`, `revoke_agent`, `list_audit`, `verify_audit`.
 
-**`AgentAuthClient`** — `list_credentials`, `use_credential(id_or_target)`.
+**`AgentAuthClient`** — `list_credentials`, `use_credential(id_or_target)`,
+`proxy(id_or_target, *, method, path, query, headers, body)`.
 
 ## Development
 

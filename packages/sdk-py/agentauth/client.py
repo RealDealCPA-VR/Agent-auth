@@ -249,11 +249,24 @@ class HumanClient(_BaseClient):
         secret: str,
         metadata: Optional[Mapping[str, Any]] = None,
         expires_at: Optional[str] = None,
+        injection: Optional[Mapping[str, Any]] = None,
     ) -> JSON:
         """Seal a credential into a passport.
 
         ``type`` must be one of ``password|oauth_token|cookie|api_key``.
         ``expires_at`` is an ISO-8601 timestamp string if provided.
+
+        ``injection`` optionally describes how the secret is injected when the
+        credential is used in **proxy mode**. It mirrors the server contract::
+
+            {"mode": "bearer"}
+            {"mode": "basic"}
+            {"mode": "cookie"}
+            {"mode": "header", "name": "X-Api-Key", "prefix": "Token "}
+            {"mode": "query",  "name": "api_key"}
+
+        Defaults server-side to ``bearer`` (or ``cookie`` for type ``cookie``).
+
         Returns the credential metadata (never the secret).
         """
         body: Dict[str, Any] = {
@@ -266,6 +279,8 @@ class HumanClient(_BaseClient):
             body["metadata"] = metadata
         if expires_at is not None:
             body["expiresAt"] = expires_at
+        if injection is not None:
+            body["injection"] = dict(injection)
         return self._request(
             "POST", f"/passports/{passport_id}/credentials", json=body
         )
@@ -408,7 +423,84 @@ class AgentAuthClient(_BaseClient):
             )
         return self._use_by_id(cred_id)
 
+    def proxy(
+        self,
+        id_or_target: str,
+        *,
+        method: str = "GET",
+        path: str = "/",
+        query: Optional[Mapping[str, str]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+        body: Optional[str] = None,
+        limit: int = 100,
+    ) -> JSON:
+        """Make a downstream request **through the vault**, by id or target.
+
+        AgentAuth performs the request server-side against the credential's
+        pinned target and injects the secret — the raw secret never appears in
+        the response. The agent only controls ``method``/``path``/``query``/
+        ``headers``/``body``; the host is fixed to the credential's target.
+
+        ``id_or_target`` is resolved exactly like :meth:`use_credential`: it is
+        tried as a credential **id** first and, on a ``404``, resolved as a
+        **target** against the agent's visible credentials.
+
+        Returns the downstream response ``{status, headers, body}`` (secret
+        redacted). ``path`` must start with ``"/"``.
+
+        Raises:
+            AgentAuthError: for the proxy-mode error contract — ``403`` (missing
+                ``vault:proxy`` / target not scoped / forbidden_target), ``400``
+                (invalid request/path), ``410`` (expired/window), ``429``
+                (use_limit_reached), ``502`` (oauth_refresh_failed/upstream),
+                ``504`` (timeout); or ``404`` if no credential matches a target.
+            ApprovalPendingError: ``202`` when human approval is required.
+        """
+        # Resolve the same way use_credential does: try id, fall back to target.
+        try:
+            return self._proxy_by_id(
+                id_or_target, method=method, path=path,
+                query=query, headers=headers, body=body,
+            )
+        except AgentAuthError as exc:
+            if exc.status != 404:
+                raise
+            # Not an id; resolve it as a target below.
+
+        cred_id = self._resolve_target(id_or_target, limit=limit)
+        if cred_id is None:
+            raise AgentAuthError(
+                status=404,
+                code="not_found",
+                message=f"no credential found for target {id_or_target!r}",
+            )
+        return self._proxy_by_id(
+            cred_id, method=method, path=path,
+            query=query, headers=headers, body=body,
+        )
+
     # -- internals ---------------------------------------------------------
+
+    def _proxy_by_id(
+        self,
+        credential_id: str,
+        *,
+        method: str,
+        path: str,
+        query: Optional[Mapping[str, str]],
+        headers: Optional[Mapping[str, str]],
+        body: Optional[str],
+    ) -> JSON:
+        payload: Dict[str, Any] = {"method": method, "path": path}
+        if query is not None:
+            payload["query"] = dict(query)
+        if headers is not None:
+            payload["headers"] = dict(headers)
+        if body is not None:
+            payload["body"] = body
+        return self._request(
+            "POST", f"/vault/credentials/{credential_id}/proxy", json=payload
+        )
 
     def _use_by_id(self, credential_id: str) -> JSON:
         return self._request(

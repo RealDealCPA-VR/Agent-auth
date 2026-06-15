@@ -62,6 +62,34 @@ try {
 The returned object is the credential plus the unsealed **`secret`** — the only
 SDK return value that carries a secret.
 
+## Proxy mode
+
+When you don't want the secret in your process at all, use **proxy mode**:
+AgentAuth makes the downstream request server-side, injects the credential, and
+relays the response back. **The raw secret never reaches the agent.** Requires
+the agent to hold the `vault:proxy` scope.
+
+```ts
+// The host is pinned server-side to the credential's target — you only control
+// method/path/query/headers/body. The secret is injected and redacted for you.
+const res = await aa.proxy('github.com', { method: 'GET', path: '/user' });
+
+console.log(res.status);            // 200
+console.log(res.headers['content-type']);
+console.log(res.body);              // downstream body, secret redacted
+```
+
+`proxy(idOrTarget, request?)` resolves `idOrTarget` exactly like
+`useCredential` (UUID → direct id; otherwise resolved by target via the
+listing). `request` defaults to `{ method: 'GET', path: '/' }`; `path` must
+start with `/`. A credential whose policy requires approval throws
+`ApprovalPendingError` (HTTP 202) — retry after an owner approves.
+
+How the secret is injected downstream is set at deposit time via the optional
+`injection` field on `depositCredential` (`bearer` | `basic` | `cookie` |
+`{ mode: 'header', name, prefix? }` | `{ mode: 'query', name }`), defaulting to
+the server's per-type default.
+
 ## Human / admin usage
 
 ```ts

@@ -4,10 +4,12 @@
  * exposes the AgentAuth vault as MCP tools.
  *
  * Drop it into any MCP-capable agent host (Claude Desktop, etc.) and the agent
- * gains two tools with zero code:
+ * gains three tools with zero code:
  *
  *   • list_credentials — enumerate the vault (metadata only, NO secrets)
  *   • use_credential   — unseal and return THE live secret for one credential
+ *   • proxy_request    — call the target with the credential injected server-side
+ *                        (the raw secret is NEVER exposed to the agent)
  *
  * Configuration comes from the environment:
  *   • AGENTAUTH_BASE_URL — the AgentAuth API base (default http://localhost:8080)
@@ -22,7 +24,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { AgentAuthClient, AgentAuthClientError, ApprovalPendingError } from './client.js';
+import { AgentAuthClient, AgentAuthClientError, ApprovalPendingError, type ProxyMethod } from './client.js';
 
 const DEFAULT_BASE_URL = 'http://localhost:8080';
 
@@ -155,6 +157,61 @@ export function buildServer(client: AgentAuthClient): McpServer {
     },
   );
 
+  server.registerTool(
+    'proxy_request',
+    {
+      title: 'Make a request with a credential injected (secret never exposed)',
+      description:
+        'Make an HTTP request to the credential\'s pinned target, with the credential ' +
+        'injected server-side — the secret is NEVER exposed to the agent. AgentAuth sends ' +
+        'the downstream request itself and returns the downstream response ' +
+        '({ status, headers, body }) with the secret redacted. The host is pinned to the ' +
+        'credential\'s target; you only control method, path, query, headers, and body. ' +
+        'Identify the credential by its UUID id, or by its target string (e.g. "github.com"), ' +
+        'which is resolved against the listing. Prefer this over use_credential whenever you ' +
+        'only need to CALL the target — the raw secret stays inside AgentAuth. If the ' +
+        'credential requires human approval, an approval request is queued and an error ' +
+        'explaining this is returned.',
+      inputSchema: {
+        idOrTarget: z
+          .string()
+          .min(1)
+          .describe('The credential UUID, or its target host string (e.g. "github.com").'),
+        method: z
+          .enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
+          .optional()
+          .describe('HTTP method for the downstream request (default GET).'),
+        path: z
+          .string()
+          .optional()
+          .describe('Path on the pinned host; must start with "/" (default "/").'),
+        query: z
+          .record(z.string())
+          .optional()
+          .describe('Optional query parameters appended to the path.'),
+        headers: z
+          .record(z.string())
+          .optional()
+          .describe('Optional request headers (the credential is injected server-side).'),
+        body: z.string().optional().describe('Optional request body (already serialized).'),
+      },
+    },
+    async ({ idOrTarget, method, path, query, headers, body }) => {
+      try {
+        const response = await client.proxy(idOrTarget, {
+          method: method as ProxyMethod | undefined,
+          path,
+          query,
+          headers,
+          body,
+        });
+        return textResult(JSON.stringify(response, null, 2));
+      } catch (err) {
+        return errorResult(describeError(err));
+      }
+    },
+  );
+
   return server;
 }
 
@@ -165,7 +222,9 @@ async function main(): Promise<void> {
   const server = buildServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  process.stderr.write(`agentauth-mcp: connected (vault ${baseUrl}); tools: list_credentials, use_credential\n`);
+  process.stderr.write(
+    `agentauth-mcp: connected (vault ${baseUrl}); tools: list_credentials, use_credential, proxy_request\n`,
+  );
 }
 
 // Run when executed directly as the bin (not when imported, e.g. by tests).

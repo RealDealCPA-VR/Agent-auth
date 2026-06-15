@@ -61,6 +61,40 @@ export interface UsedCredential extends VaultCredential {
   secret: string;
 }
 
+/** HTTP methods accepted by the proxy endpoint. */
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
+
+/**
+ * A proxied downstream request. The agent controls only method/path/query/
+ * headers/body — the **host is pinned server-side** to the credential's target,
+ * and AgentAuth injects the secret. The raw secret never reaches the agent.
+ */
+export interface ProxyRequest {
+  /** HTTP method for the downstream request. Defaults to `GET`. */
+  method?: HttpMethod;
+  /** Request path; must start with `/`. Defaults to `/`. */
+  path?: string;
+  /** Query string parameters to append. */
+  query?: Record<string, string>;
+  /** Extra request headers to send downstream. */
+  headers?: Record<string, string>;
+  /** Raw request body (already serialized). */
+  body?: string;
+}
+
+/**
+ * The downstream response, relayed back by AgentAuth with the injected secret
+ * redacted. Nothing here carries the credential.
+ */
+export interface ProxyResponse {
+  /** Downstream HTTP status code. */
+  status: number;
+  /** Downstream response headers. */
+  headers: Record<string, string>;
+  /** Downstream response body (secret redacted). */
+  body: string;
+}
+
 /** A principal (human account). */
 export interface Principal {
   id: string;
@@ -461,6 +495,45 @@ export class AgentAuthClient extends Transport {
   }
 
   /**
+   * Proxy a request through AgentAuth: it makes the downstream call server-side,
+   * injects the credential's secret, and relays the response back — **the raw
+   * secret never reaches the agent**. Requires the `vault:proxy` scope.
+   *
+   * The credential is identified either by its **id** (a UUID) or by **target**
+   * (any other string, e.g. `github.com`), resolved exactly like
+   * {@link useCredential}. The host is pinned server-side to the credential's
+   * target; the agent only controls method/path/query/headers/body.
+   *
+   * @param idOrTarget A credential UUID, or a target host string to resolve.
+   * @param request The downstream request. Defaults to `GET /`.
+   * @throws {ApprovalPendingError} 202 when the credential's policy requires
+   *   human approval.
+   * @throws {AgentAuthError} 403 (missing `vault:proxy` / target not scoped /
+   *   forbidden target), 400 (invalid request/path), 410 (expired/window),
+   *   429 (use limit reached), 502/504 (upstream/timeout), plus the usual
+   *   401/404/503.
+   */
+  async proxy(idOrTarget: string, request: ProxyRequest = {}): Promise<ProxyResponse> {
+    if (!idOrTarget) {
+      throw new TypeError('AgentAuth SDK: proxy() requires an id or target');
+    }
+    const id = isUuid(idOrTarget) ? idOrTarget : await this.resolveTarget(idOrTarget);
+    const body: ProxyRequest = {
+      method: request.method ?? 'GET',
+      path: request.path ?? '/',
+      ...(request.query !== undefined ? { query: request.query } : {}),
+      ...(request.headers !== undefined ? { headers: request.headers } : {}),
+      ...(request.body !== undefined ? { body: request.body } : {}),
+    };
+    return this.request<ProxyResponse>({
+      method: 'POST',
+      path: `/v1/vault/credentials/${encodeURIComponent(id)}/proxy`,
+      body,
+      authorization: this.authHeader,
+    });
+  }
+
+  /**
    * Resolve a target string to a single credential id by scanning the listing.
    * Pages until a match is found or the listing is exhausted. If more than one
    * credential shares the target, the first match (by listing order) wins.
@@ -498,6 +571,18 @@ export interface HumanClientOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * How AgentAuth injects the credential into a downstream {@link AgentAuthClient.proxy}
+ * request. Defaults per credential type server-side (`bearer`, or `cookie` for
+ * type `cookie`).
+ */
+export type CredentialInjection =
+  | { mode: 'bearer' }
+  | { mode: 'basic' }
+  | { mode: 'cookie' }
+  | { mode: 'header'; name: string; prefix?: string }
+  | { mode: 'query'; name: string };
+
 /** Input for {@link HumanClient.depositCredential}. */
 export interface DepositCredentialInput {
   target: string;
@@ -506,6 +591,11 @@ export interface DepositCredentialInput {
   secret: string;
   metadata?: Record<string, unknown>;
   expiresAt?: string;
+  /**
+   * Optional injection strategy used when the credential is consumed via
+   * proxy mode. Omit to use the server's per-type default.
+   */
+  injection?: CredentialInjection;
 }
 
 /** Input for {@link HumanClient.issueAgent}. */

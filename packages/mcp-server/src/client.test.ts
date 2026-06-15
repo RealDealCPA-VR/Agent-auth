@@ -140,6 +140,129 @@ describe('AgentAuthClient.useCredential by target (non-UUID)', () => {
   });
 });
 
+describe('AgentAuthClient.proxy by id (UUID)', () => {
+  it('POSTs the proxy request directly without listing, returns the downstream response', async () => {
+    const downstream = {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+      body: '{"ok":true}',
+    };
+    const fetchMock = stubFetch(async () => jsonResponse(200, downstream));
+    const client = makeClient();
+
+    const result = await client.proxy(UUID, {
+      method: 'POST',
+      path: '/repos',
+      query: { page: '2' },
+      headers: { 'x-test': '1' },
+      body: '{"name":"x"}',
+    });
+
+    expect(result).toEqual(downstream);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no listing round-trip
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${BASE}/v1/vault/credentials/${UUID}/proxy`);
+    const typedInit = init as RequestInit;
+    expect(typedInit.method).toBe('POST');
+    const headers = typedInit.headers as Record<string, string>;
+    expect(headers.authorization).toBe(`Bearer ${KEY}`);
+    expect(headers['content-type']).toBe('application/json');
+    expect(JSON.parse(typedInit.body as string)).toEqual({
+      method: 'POST',
+      path: '/repos',
+      query: { page: '2' },
+      headers: { 'x-test': '1' },
+      body: '{"name":"x"}',
+    });
+  });
+
+  it('omits unset request fields from the JSON body (defaults applied server-side)', async () => {
+    const downstream = { status: 200, headers: {}, body: '' };
+    const fetchMock = stubFetch(async () => jsonResponse(200, downstream));
+    const client = makeClient();
+
+    await client.proxy(UUID);
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({});
+  });
+});
+
+describe('AgentAuthClient.proxy by target (non-UUID)', () => {
+  it('lists, matches items[].target, then POSTs that id /proxy', async () => {
+    const downstream = { status: 200, headers: {}, body: 'pong' };
+    const calls: string[] = [];
+    const fetchMock = stubFetch(async (url, init) => {
+      calls.push(`${(init as RequestInit)?.method ?? 'GET'} ${url}`);
+      if ((url as string).includes('/proxy')) return jsonResponse(200, downstream);
+      return jsonResponse(200, samplePage); // the listing
+    });
+    const client = makeClient();
+
+    const result = await client.proxy('github.com', { path: '/ping' });
+
+    expect(result).toEqual(downstream);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calls[0]).toContain('GET');
+    expect(calls[0]).toContain('/v1/vault/credentials?');
+    expect(calls[1]).toBe(`POST ${BASE}/v1/vault/credentials/${UUID}/proxy`);
+  });
+
+  it('throws a 404 AgentAuthClientError when no item matches the target', async () => {
+    const emptyPage: CredentialsPage = {
+      items: [],
+      pagination: { limit: 200, offset: 0, total: 0, returned: 0 },
+    };
+    stubFetch(async () => jsonResponse(200, emptyPage));
+    const client = makeClient();
+
+    await expect(client.proxy('nope.example.com')).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    });
+  });
+});
+
+describe('AgentAuthClient.proxy error mapping', () => {
+  it('maps a 403 forbidden_target envelope to a typed AgentAuthClientError', async () => {
+    stubFetch(async () =>
+      jsonResponse(403, {
+        error: { code: 'forbidden_target', message: 'target not scoped', requestId: 'req-9' },
+      }),
+    );
+    const client = makeClient();
+
+    const err = (await client.proxy(UUID).catch((e: unknown) => e)) as AgentAuthClientError;
+    expect(err).toBeInstanceOf(AgentAuthClientError);
+    expect(err.status).toBe(403);
+    expect(err.code).toBe('forbidden_target');
+    expect(err.message).toBe('target not scoped');
+    expect(err.requestId).toBe('req-9');
+  });
+
+  it('surfaces a 202 approval-pending proxy response as ApprovalPendingError', async () => {
+    stubFetch(async () => jsonResponse(202, { status: 'pending', requestId: 'appr-proxy' }));
+    const client = makeClient();
+
+    const err = (await client.proxy(UUID).catch((e: unknown) => e)) as ApprovalPendingError;
+    expect(err).toBeInstanceOf(ApprovalPendingError);
+    expect(err.status).toBe(202);
+    expect(err.code).toBe('approval_pending');
+    expect(err.requestId).toBe('appr-proxy');
+  });
+
+  it('maps a 504 upstream timeout to a typed error', async () => {
+    stubFetch(async () =>
+      jsonResponse(504, { error: { code: 'timeout', message: 'upstream timed out' } }),
+    );
+    const client = makeClient();
+
+    const err = (await client.proxy(UUID).catch((e: unknown) => e)) as AgentAuthClientError;
+    expect(err.status).toBe(504);
+    expect(err.code).toBe('timeout');
+  });
+});
+
 describe('error mapping', () => {
   it('maps a 403 envelope to a typed AgentAuthClientError with code+message+requestId', async () => {
     stubFetch(async () =>
