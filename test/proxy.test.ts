@@ -179,4 +179,11 @@ describe('proxy mode', () => {
     const res = await proxy(apiKey, credId, { method: 'GET', path: 'whoami' });
     expect(res.statusCode).toBe(400);
   });
+
+  it('returns 404 (not 500) when the credential id is not a UUID', async () => {
+    const { apiKey } = await setup();
+    const res = await proxy(apiKey, 'not-a-uuid', { method: 'GET', path: '/whoami' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('not_found');
+  });
 });

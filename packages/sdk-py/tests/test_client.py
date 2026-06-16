@@ -248,53 +248,53 @@ def test_agent_list_credentials_sends_bearer_key():
 
 def test_use_credential_by_id_hits_use_endpoint_directly():
     calls: List[str] = []
+    cid = "11111111-1111-4111-8111-111111111111"
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
-        assert request.url.path == "/v1/vault/credentials/c1/use"
+        assert request.url.path == f"/v1/vault/credentials/{cid}/use"
         assert request.method == "POST"
-        return ok({"id": "c1", "target": "github.com", "label": "GH",
+        return ok({"id": cid, "target": "github.com", "label": "GH",
                    "type": "api_key", "metadata": {}, "secret": "ghp_xxx"})
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
-    out = client.use_credential("c1")
+    out = client.use_credential(cid)
     assert out["secret"] == "ghp_xxx"
-    # Only the direct use call — no listing needed when the id resolves.
-    assert calls == ["/v1/vault/credentials/c1/use"]
+    # A UUID is used directly — no listing needed.
+    assert calls == [f"/v1/vault/credentials/{cid}/use"]
 
 
 def test_use_credential_by_target_resolves_via_listing():
-    """A target that isn't an id: use 404s, then we list and resolve."""
+    """A non-UUID target is resolved via the listing first (never POSTed to a
+    uuid-typed :id route), then used by the resolved id."""
     calls: List[str] = []
+    gh = "22222222-2222-4222-8222-222222222222"
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(f"{request.method} {request.url.path}")
-        # 1) direct use of the literal "github.com" -> 404 (not an id)
-        if request.url.path == "/v1/vault/credentials/github.com/use":
-            return envelope_error(404, "not_found", "no such credential")
-        # 2) listing to resolve the target
+        # 1) listing to resolve the target
         if request.url.path == "/v1/vault/credentials":
             return ok({
                 "items": [
                     {"id": "c-other", "target": "gitlab.com"},
-                    {"id": "c-gh", "target": "github.com"},
+                    {"id": gh, "target": "github.com"},
                 ],
                 "pagination": {"limit": 100, "offset": 0, "total": 2, "returned": 2},
             })
-        # 3) use of the resolved id
-        if request.url.path == "/v1/vault/credentials/c-gh/use":
-            return ok({"id": "c-gh", "target": "github.com", "label": "GH",
+        # 2) use of the resolved id
+        if request.url.path == f"/v1/vault/credentials/{gh}/use":
+            return ok({"id": gh, "target": "github.com", "label": "GH",
                        "type": "api_key", "metadata": {}, "secret": "resolved"})
         raise AssertionError(request.url.path)
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     out = client.use_credential("github.com")
-    assert out["id"] == "c-gh"
+    assert out["id"] == gh
     assert out["secret"] == "resolved"
+    # No direct POST to /github.com/use — the target is resolved first.
     assert calls == [
-        "POST /v1/vault/credentials/github.com/use",
         "GET /v1/vault/credentials",
-        "POST /v1/vault/credentials/c-gh/use",
+        f"POST /v1/vault/credentials/{gh}/use",
     ]
 
 
@@ -338,8 +338,9 @@ def test_use_credential_target_paginates_until_found():
 
 
 def test_use_credential_by_id_non_404_error_propagates():
-    """A 403 on a real id must NOT trigger target-resolution fallback."""
+    """A 403 on a UUID id goes straight to /use; no listing fallback."""
     calls: List[str] = []
+    cid = "11111111-1111-4111-8111-111111111111"
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
@@ -347,11 +348,11 @@ def test_use_credential_by_id_non_404_error_propagates():
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     with pytest.raises(AgentAuthError) as ei:
-        client.use_credential("c1")
+        client.use_credential(cid)
     assert ei.value.status == 403
     assert ei.value.code == "forbidden"
     # No listing fallback happened.
-    assert calls == ["/v1/vault/credentials/c1/use"]
+    assert calls == [f"/v1/vault/credentials/{cid}/use"]
 
 
 # --------------------------------------------------------------------------
@@ -361,18 +362,20 @@ def test_use_credential_by_id_non_404_error_propagates():
 def test_proxy_by_id_posts_proxy_path():
     seen: Dict[str, Any] = {}
 
+    cid = "11111111-1111-4111-8111-111111111111"
+
     def handler(request: httpx.Request) -> httpx.Response:
         seen["method"] = request.method
         seen["path"] = request.url.path
         seen["body"] = body_of(request)
-        assert request.url.path == "/v1/vault/credentials/c1/proxy"
+        assert request.url.path == f"/v1/vault/credentials/{cid}/proxy"
         assert request.method == "POST"
         return ok({"status": 200, "headers": {"content-type": "application/json"},
                    "body": '{"ok":true}'})
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     out = client.proxy(
-        "c1",
+        cid,
         method="POST",
         path="/repos/me/x/issues",
         query={"state": "open"},
@@ -393,13 +396,15 @@ def test_proxy_by_id_posts_proxy_path():
 def test_proxy_omits_none_fields_and_defaults():
     seen: Dict[str, Any] = {}
 
+    cid = "11111111-1111-4111-8111-111111111111"
+
     def handler(request: httpx.Request) -> httpx.Response:
         seen["body"] = body_of(request)
-        assert request.url.path == "/v1/vault/credentials/c1/proxy"
+        assert request.url.path == f"/v1/vault/credentials/{cid}/proxy"
         return ok({"status": 204, "headers": {}, "body": ""})
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
-    client.proxy("c1")
+    client.proxy(cid)
     # Defaults applied for method/path; optional fields omitted entirely.
     assert seen["body"] == {"method": "GET", "path": "/"}
     assert "query" not in seen["body"]
@@ -408,41 +413,40 @@ def test_proxy_omits_none_fields_and_defaults():
 
 
 def test_proxy_by_target_resolves_then_proxies():
-    """A target that isn't an id: proxy 404s, then we list, resolve, and proxy."""
+    """A non-UUID target is resolved via the listing first, then proxied by id."""
     calls: List[str] = []
+    gh = "22222222-2222-4222-8222-222222222222"
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(f"{request.method} {request.url.path}")
-        # 1) direct proxy of the literal "github.com" -> 404 (not an id)
-        if request.url.path == "/v1/vault/credentials/github.com/proxy":
-            return envelope_error(404, "not_found", "no such credential")
-        # 2) listing to resolve the target
+        # 1) listing to resolve the target
         if request.url.path == "/v1/vault/credentials":
             return ok({
                 "items": [
                     {"id": "c-other", "target": "gitlab.com"},
-                    {"id": "c-gh", "target": "github.com"},
+                    {"id": gh, "target": "github.com"},
                 ],
                 "pagination": {"limit": 100, "offset": 0, "total": 2, "returned": 2},
             })
-        # 3) proxy of the resolved id
-        if request.url.path == "/v1/vault/credentials/c-gh/proxy":
+        # 2) proxy of the resolved id
+        if request.url.path == f"/v1/vault/credentials/{gh}/proxy":
             return ok({"status": 200, "headers": {}, "body": "resolved"})
         raise AssertionError(request.url.path)
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     out = client.proxy("github.com", path="/user")
     assert out["body"] == "resolved"
+    # No direct POST to /github.com/proxy — the target is resolved first.
     assert calls == [
-        "POST /v1/vault/credentials/github.com/proxy",
         "GET /v1/vault/credentials",
-        "POST /v1/vault/credentials/c-gh/proxy",
+        f"POST /v1/vault/credentials/{gh}/proxy",
     ]
 
 
 def test_proxy_by_id_non_404_error_propagates():
-    """A 403 (e.g. missing vault:proxy) must NOT trigger target resolution."""
+    """A 403 (e.g. missing vault:proxy) on a UUID id propagates without listing."""
     calls: List[str] = []
+    cid = "11111111-1111-4111-8111-111111111111"
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.path)
@@ -450,10 +454,10 @@ def test_proxy_by_id_non_404_error_propagates():
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     with pytest.raises(AgentAuthError) as ei:
-        client.proxy("c1")
+        client.proxy(cid)
     assert ei.value.status == 403
     assert ei.value.code == "forbidden"
-    assert calls == ["/v1/vault/credentials/c1/proxy"]
+    assert calls == [f"/v1/vault/credentials/{cid}/proxy"]
 
 
 def test_proxy_202_raises_approval_pending():
@@ -534,7 +538,7 @@ def test_503_fail_closed_on_vault_use():
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
     with pytest.raises(AgentAuthError) as ei:
-        client.use_credential("c1")
+        client.use_credential("11111111-1111-4111-8111-111111111111")
     assert ei.value.status == 503
     assert ei.value.code == "unavailable"
 

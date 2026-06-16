@@ -17,6 +17,7 @@ context managers so the underlying connection pool is closed deterministically.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Mapping, Optional, Union
 
 import httpx
@@ -25,6 +26,13 @@ from .errors import AgentAuthError, ApprovalPendingError
 
 # Public API base path. All resource endpoints live under /v1.
 _API_PREFIX = "/v1"
+
+# Credential ids are UUIDs. We resolve id-vs-target up front (like the TS SDKs)
+# rather than POSTing a target string to /:id/* — the server's :id is a Postgres
+# uuid column, so a non-uuid id is not a clean 404 to fall back on.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
 
 # Default per-request timeout (seconds). The vault deliberately fails closed and
 # can return 503 quickly, so a modest default is fine; callers may override.
@@ -394,10 +402,10 @@ class AgentAuthClient(_BaseClient):
     def use_credential(self, id_or_target: str, *, limit: int = 100) -> JSON:
         """Unseal and return a credential, by id **or** by target host.
 
-        If ``id_or_target`` matches a credential id exactly, that credential is
-        used directly. Otherwise it is treated as a ``target`` and resolved
-        against the agent's visible credentials (the data plane has no
-        target-lookup endpoint, so resolution happens client-side).
+        If ``id_or_target`` is a credential id (UUID) it is used directly.
+        Otherwise it is treated as a ``target`` and resolved against the agent's
+        visible credentials (the data plane has no target-lookup endpoint, so
+        resolution happens client-side).
 
         Returns ``{id, target, label, type, metadata, secret}``.
 
@@ -405,22 +413,7 @@ class AgentAuthClient(_BaseClient):
             AgentAuthError: ``not_found`` (404) if no credential matches the
                 target; or whatever the server returns for an id-based use.
         """
-        # Fast path: assume it's an id and try the use endpoint directly.
-        # A 404 here means "no such id" -> fall back to target resolution.
-        try:
-            return self._use_by_id(id_or_target)
-        except AgentAuthError as exc:
-            if exc.status != 404:
-                raise
-            # Not an id; resolve it as a target below.
-
-        cred_id = self._resolve_target(id_or_target, limit=limit)
-        if cred_id is None:
-            raise AgentAuthError(
-                status=404,
-                code="not_found",
-                message=f"no credential found for target {id_or_target!r}",
-            )
+        cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
         return self._use_by_id(cred_id)
 
     def proxy(
@@ -441,8 +434,8 @@ class AgentAuthClient(_BaseClient):
         the response. The agent only controls ``method``/``path``/``query``/
         ``headers``/``body``; the host is fixed to the credential's target.
 
-        ``id_or_target`` is resolved exactly like :meth:`use_credential`: it is
-        tried as a credential **id** first and, on a ``404``, resolved as a
+        ``id_or_target`` is resolved exactly like :meth:`use_credential`: a UUID
+        is used as the credential **id** directly; anything else is resolved as a
         **target** against the agent's visible credentials.
 
         Returns the downstream response ``{status, headers, body}`` (secret
@@ -456,17 +449,24 @@ class AgentAuthClient(_BaseClient):
                 ``504`` (timeout); or ``404`` if no credential matches a target.
             ApprovalPendingError: ``202`` when human approval is required.
         """
-        # Resolve the same way use_credential does: try id, fall back to target.
-        try:
-            return self._proxy_by_id(
-                id_or_target, method=method, path=path,
-                query=query, headers=headers, body=body,
-            )
-        except AgentAuthError as exc:
-            if exc.status != 404:
-                raise
-            # Not an id; resolve it as a target below.
+        cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
+        return self._proxy_by_id(
+            cred_id, method=method, path=path,
+            query=query, headers=headers, body=body,
+        )
 
+    # -- internals ---------------------------------------------------------
+
+    def _resolve_id_or_target(self, id_or_target: str, *, limit: int) -> str:
+        """Return a credential id for an id-or-target argument.
+
+        A UUID is used directly; anything else is resolved as a target against
+        the agent's visible credentials (the data plane has no target-lookup
+        endpoint). Mirrors the TS SDKs — we never POST a target string to a
+        uuid-typed ``:id`` route.
+        """
+        if _UUID_RE.match(id_or_target):
+            return id_or_target
         cred_id = self._resolve_target(id_or_target, limit=limit)
         if cred_id is None:
             raise AgentAuthError(
@@ -474,12 +474,7 @@ class AgentAuthClient(_BaseClient):
                 code="not_found",
                 message=f"no credential found for target {id_or_target!r}",
             )
-        return self._proxy_by_id(
-            cred_id, method=method, path=path,
-            query=query, headers=headers, body=body,
-        )
-
-    # -- internals ---------------------------------------------------------
+        return cred_id
 
     def _proxy_by_id(
         self,

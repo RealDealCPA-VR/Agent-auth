@@ -12,6 +12,8 @@ import type { Injection } from './proxy.js';
  * persisted or logged in cleartext.
  */
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function createPassport(principalId: string, name: string) {
   const dek = generateDek();
   const wrapped = await wrapDek(dek);
@@ -212,6 +214,11 @@ export async function useCredential(
   credentialId: string,
   opts: { agentId?: string } = {},
 ): Promise<UseResult> {
+  // The `id` column is a Postgres uuid; a non-uuid (e.g. an agent passing a
+  // target string by mistake) would make the driver throw 22P02 and surface as a
+  // 500. Treat a malformed id as "no such credential" — the correct semantics.
+  if (!UUID_RE.test(credentialId)) return { status: 'not_found' };
+
   const [cred] = await db
     .select()
     .from(schema.credentials)

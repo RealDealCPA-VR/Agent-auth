@@ -121,8 +121,15 @@ function isPrivateHost(host: string): boolean {
     if (a === 192 && b === 168) return true;
     if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
   }
-  // IPv6 unspecified, unique-local (fc00::/7) and link-local (fe80::/10).
-  if (h === '::' || h.startsWith('fd') || h.startsWith('fc') || h.startsWith('fe80')) return true;
+  // IPv6 unspecified, unique-local (fc00::/7) and link-local (fe80::/10). Gate on
+  // h actually being an IPv6 literal so ordinary DNS names whose first label
+  // starts with fc/fd/fe80 (e.g. fcm.googleapis.com) are NOT misclassified — a
+  // name that truly resolves to a private IPv6 is still caught by resolvesToPrivate.
+  if (
+    isIP(h) === 6 &&
+    (h === '::' || h.startsWith('fd') || h.startsWith('fc') || h.startsWith('fe80'))
+  )
+    return true;
   return false;
 }
 
@@ -187,6 +194,13 @@ function secretVariants(secret: string): string[] {
     out.add(Buffer.from(secret).toString('base64url'));
   } catch {
     /* ignore */
+  }
+  // Percent-encoded forms: query-mode injection puts the secret through
+  // url.searchParams (percent-encoded on the wire), and a downstream may reflect
+  // the request URL/query back.
+  for (const v of [...out]) {
+    const enc = encodeURIComponent(v);
+    if (enc !== v) out.add(enc);
   }
   return [...out].filter((v) => v.length > 0);
 }

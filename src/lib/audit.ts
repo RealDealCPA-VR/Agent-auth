@@ -19,6 +19,35 @@ export interface AuditInput {
 // A transaction-like executor: either the root db or a tx handle.
 type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The audit columns for ids are typed `uuid`. A caller may legitimately try to
+ * audit a denied attempt against a malformed id (e.g. an agent posting a target
+ * string to a `:id` route). Keep such an id out of the uuid column — preserve it
+ * in `detail` so the event is still recorded and forensically complete.
+ */
+function sanitizeIds(input: AuditInput): AuditInput {
+  const bad: Record<string, string> = {};
+  const fix = (key: 'principalId' | 'passportId' | 'agentId' | 'credentialId') => {
+    const v = input[key];
+    if (typeof v === 'string' && !UUID_RE.test(v)) {
+      bad[key] = v;
+      return null;
+    }
+    return v ?? null;
+  };
+  return {
+    ...input,
+    principalId: fix('principalId'),
+    passportId: fix('passportId'),
+    agentId: fix('agentId'),
+    credentialId: fix('credentialId'),
+    detail:
+      Object.keys(bad).length > 0 ? { ...(input.detail ?? {}), invalidIds: bad } : input.detail,
+  };
+}
+
 // Audit HMAC keyring (supports rotation). The active key is AUDIT_HMAC_SECRET, or
 // — for back-compat — derived from MASTER_KEY. Retired keys verify older rows.
 function deriveActiveAuditKey(): Buffer {
@@ -114,12 +143,13 @@ async function appendWith(exec: Executor, input: AuditInput): Promise<void> {
  * `detail` must contain non-secret context only.
  */
 export async function audit(input: AuditInput, exec?: Executor): Promise<void> {
+  const safe = sanitizeIds(input);
   if (exec) {
-    await appendWith(exec, input);
+    await appendWith(exec, safe);
     return;
   }
   try {
-    await db.transaction((tx) => appendWith(tx, input));
+    await db.transaction((tx) => appendWith(tx, safe));
   } catch (err) {
     console.error(`[audit] failed to record ${input.action}:`, (err as Error)?.message);
   }
