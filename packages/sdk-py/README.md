@@ -41,10 +41,13 @@ for c in client.list_credentials()["items"]:
     print(c["target"], c["label"], c["type"])
 ```
 
-`use_credential(id_or_target)` first tries the value as a credential **id**; on a
-`404` it falls back to treating it as a **target** and resolves it client-side by
-paging the agent's visible credentials (the data plane has no server-side target
-lookup). A non-404 error (e.g. `403 forbidden`) is raised as-is — no fallback.
+`use_credential(id_or_target)`: if the value is a **UUID** it is POSTed straight
+to the use endpoint as a credential **id**. Otherwise it is treated as a
+**target** (e.g. `github.com`) and resolved client-side by paging the agent's
+visible credentials — the first whose target matches wins, and a local `404
+not_found` is raised if none match. The data plane has no server-side target
+lookup, so a target string is never POSTed to the uuid-typed `:id` route.
+Server-side errors from an id-based use (`403`, `410`, …) are raised as-is.
 
 ## Proxy mode (the secret never leaves the vault)
 

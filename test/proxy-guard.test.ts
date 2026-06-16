@@ -46,6 +46,24 @@ describe('proxy guards', () => {
     }
   });
 
+  it('blocks encoded-IP forms of loopback/metadata on bare (schemeless) targets', async () => {
+    // The URL parser canonicalizes these to 127.0.0.1 / 169.254.169.254 before
+    // connecting, so the SSRF guard must canonicalize them too.
+    const hosts = [
+      '2130706433', // decimal 127.0.0.1
+      '0x7f000001', // hex 127.0.0.1
+      '0177.0.0.1', // octal 127.0.0.1
+      '127.1', // short-form 127.0.0.1
+      '2852039166', // decimal 169.254.169.254 (cloud metadata)
+      '0xa9fea9fe', // hex 169.254.169.254
+    ];
+    for (const target of hosts) {
+      const r = await proxyRequest({ ...base, target });
+      expect(r.ok, target).toBe(false);
+      if (!r.ok) expect(r.reason, target).toBe('forbidden_target');
+    }
+  });
+
   it('refuses plaintext http to a non-loopback host', async () => {
     const r = await proxyRequest({ ...base, target: 'http://example.com' });
     expect(r.ok).toBe(false);

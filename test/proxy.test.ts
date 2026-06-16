@@ -186,4 +186,36 @@ describe('proxy mode', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe('not_found');
   });
+
+  it('lets a proxy-only agent (no vault:read) list metadata to resolve a target', async () => {
+    // proxy-only agents must be able to resolve a target host -> credential id
+    // even though they can never read the secret.
+    const { apiKey } = await setup({ scopes: ['vault:proxy', 'target:*'] });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/vault/credentials',
+      headers: h.auth(apiKey),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {
+    const { token, pp } = await setup();
+    // A fresh credential with maxUses:1 at the same mock target.
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'capped',
+      type: 'api_key',
+      secret: SECRET,
+      maxUses: 1,
+    });
+    const agent = await h.issueAgent(app, token, pp, ['vault:proxy', 'target:*']);
+    // A bad path is rejected by the precheck (before any use is charged).
+    const bad = await proxy(agent.apiKey, cred.id, { method: 'GET', path: 'no-slash' });
+    expect(bad.statusCode).toBe(400);
+    // The single allowed use is still available — the rejected call didn't burn it.
+    const okRes = await proxy(agent.apiKey, cred.id, { method: 'GET', path: '/whoami' });
+    expect(okRes.statusCode).toBe(200);
+  });
 });

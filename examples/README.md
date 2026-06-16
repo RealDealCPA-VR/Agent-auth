@@ -108,7 +108,7 @@ Using credential for target "github.com"…
   ✓ got a sealed secret, unsealed for this instant:
     target:  github.com
     type:    api_key
-    secret:  <redacted 17 chars, starts "ghp_…">
+    secret:  <redacted 18 chars, starts "ghp_…">
 ```
 
 ## Run the Python example

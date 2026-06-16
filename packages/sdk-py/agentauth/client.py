@@ -446,7 +446,11 @@ class AgentAuthClient(_BaseClient):
                 ``vault:proxy`` / target not scoped / forbidden_target), ``400``
                 (invalid request/path), ``410`` (expired/window), ``429``
                 (use_limit_reached), ``502`` (oauth_refresh_failed/upstream),
-                ``504`` (timeout); or ``404`` if no credential matches a target.
+                ``504`` (timeout), ``500`` (``internal`` — the server failed to
+                unseal the credential: corrupt/tampered ciphertext, a wrong/rotated
+                key, or an oauth token whose sealed JSON can't be parsed); or
+                ``404`` if the credential id does not exist / isn't visible, or no
+                credential matches a target.
             ApprovalPendingError: ``202`` when human approval is required.
         """
         cred_id = self._resolve_id_or_target(id_or_target, limit=limit)

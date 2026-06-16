@@ -209,6 +209,27 @@ async function freshOauthAccessToken(
  * unsealing. For require-approval creds, an approval request is materialized /
  * consumed via the approval workflow (needs the calling agent's id).
  */
+/**
+ * Read a credential's target host WITHOUT unsealing it or charging a use. Lets
+ * the proxy route run its SSRF/path guards before reserving a maxUses slot or
+ * spending an approval, so a guard-rejected call never burns one. Returns null
+ * for a malformed/unknown id (same semantics as a not_found use).
+ */
+export async function getCredentialTarget(
+  passportId: string,
+  credentialId: string,
+): Promise<{ target: string } | null> {
+  if (!UUID_RE.test(credentialId)) return null;
+  const [row] = await db
+    .select({ target: schema.credentials.target })
+    .from(schema.credentials)
+    .where(
+      and(eq(schema.credentials.id, credentialId), eq(schema.credentials.passportId, passportId)),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
 export async function useCredential(
   passportId: string,
   credentialId: string,

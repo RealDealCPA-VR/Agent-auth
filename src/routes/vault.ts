@@ -4,8 +4,8 @@ import { z } from 'zod';
 import { schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
 import { hasScope, allowsTarget } from '../auth/agent.js';
-import { useCredential } from '../lib/vault.js';
-import { proxyRequest } from '../lib/proxy.js';
+import { useCredential, getCredentialTarget } from '../lib/vault.js';
+import { proxyRequest, precheckProxyTarget } from '../lib/proxy.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
@@ -87,7 +87,12 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const agent = req.agent!;
-      if (!hasScope(agent.scopes, 'vault:read')) {
+      // vault:read OR vault:proxy may list metadata. A proxy-only agent (granted
+      // vault:proxy without vault:read so it can act through credentials it can
+      // never read) still needs to resolve a target host to a credential id —
+      // and listing returns metadata only (never a secret), bounded by the same
+      // target-scoping, so this grants no extra reach than the proxy it already has.
+      if (!hasScope(agent.scopes, 'vault:read') && !hasScope(agent.scopes, 'vault:proxy')) {
         return fail(req, reply, 403, 'forbidden', 'missing scope: vault:read');
       }
       const q = paginationSchema.safeParse(req.query);
@@ -265,6 +270,25 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
           parsed.error.flatten(),
         );
 
+      // Validate target-scope + the SSRF/path guards BEFORE charging a use, so a
+      // rejected proxy never burns a maxUses slot or spends an approval grant.
+      const meta = await getCredentialTarget(agent.passportId, id);
+      if (!meta) return deny('not_found', 404, 'not_found', 'credential not found');
+      if (!allowsTarget(agent.scopes, meta.target)) {
+        return deny(
+          `target_not_allowed:${meta.target}`,
+          403,
+          'forbidden',
+          `agent not scoped for target: ${meta.target}`,
+        );
+      }
+      const pre = await precheckProxyTarget(meta.target, parsed.data.path ?? '/');
+      if (pre) {
+        const status = pre.reason === 'bad_request' ? 400 : 403;
+        const code = pre.reason === 'bad_request' ? 'invalid_request' : 'forbidden';
+        return deny(pre.reason, status, code, pre.message);
+      }
+
       const result = await useCredential(agent.passportId, id, { agentId: agent.agentId });
       if (result.status === 'not_found')
         return deny('not_found', 404, 'not_found', 'credential not found');
@@ -296,15 +320,6 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         return deny('refresh_failed', 502, 'oauth_refresh_failed', 'failed to refresh oauth token');
       if (result.status === 'decrypt_error')
         return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
-
-      if (!allowsTarget(agent.scopes, result.target)) {
-        return deny(
-          `target_not_allowed:${result.target}`,
-          403,
-          'forbidden',
-          `agent not scoped for target: ${result.target}`,
-        );
-      }
 
       const outcome = await proxyRequest({
         target: result.target,

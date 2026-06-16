@@ -78,12 +78,24 @@ function hostnameOf(host: string): string {
   let h = host.trim();
   if (h.startsWith('[')) {
     const end = h.indexOf(']');
-    if (end >= 0) h = h.slice(1, end); // inside the brackets, drop any `]:port`
-  } else {
-    const colon = h.indexOf(':');
-    if (colon >= 0) h = h.slice(0, colon); // strip :port (IPv4/hostname only)
+    if (end >= 0) return h.slice(1, end).toLowerCase(); // IPv6 literal — already canonical
   }
-  return h.replace(/\.$/, '').toLowerCase(); // strip a single trailing dot
+  const colon = h.indexOf(':');
+  if (colon >= 0) h = h.slice(0, colon); // strip :port (IPv4/hostname only)
+  h = h.replace(/\.$/, '').toLowerCase(); // strip a single trailing dot
+  // Canonicalize encoded IPv4 forms (decimal 2130706433, hex 0x7f000001, octal
+  // 0177.0.0.1, short 127.1) the SAME way the URL parser will before connecting,
+  // so the SSRF check sees the real dotted-quad — otherwise a bare encoded-IP
+  // target slips past isPrivateHost and reaches loopback/metadata.
+  if (h.length > 0 && !h.includes(':')) {
+    try {
+      const canon = new URL(`https://${h}`).hostname;
+      if (canon) h = canon.toLowerCase();
+    } catch {
+      /* keep h as-is */
+    }
+  }
+  return h;
 }
 
 /** If `h` is an IPv4-mapped IPv6 literal, return the embedded dotted IPv4. */
@@ -196,11 +208,14 @@ function secretVariants(secret: string): string[] {
     /* ignore */
   }
   // Percent-encoded forms: query-mode injection puts the secret through
-  // url.searchParams (percent-encoded on the wire), and a downstream may reflect
-  // the request URL/query back.
+  // url.searchParams (application/x-www-form-urlencoded on the wire — note a
+  // space becomes '+', not %20), and a downstream may reflect the request
+  // URL/query back. Cover both the %-encoded and the '+'-for-space wire forms.
   for (const v of [...out]) {
     const enc = encodeURIComponent(v);
     if (enc !== v) out.add(enc);
+    const formEnc = enc.replace(/%20/g, '+');
+    if (formEnc !== v) out.add(formEnc);
   }
   return [...out].filter((v) => v.length > 0);
 }
@@ -244,21 +259,20 @@ async function readCappedBytes(res: Response, cap: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-export async function proxyRequest(args: {
-  target: string;
-  type: string;
-  injection: Injection | null;
-  secret: string;
-  request: ProxyRequest;
-}): Promise<ProxyOutcome> {
-  const { secret } = args;
-  const injection = args.injection ?? defaultInjection(args.type);
+type ProxyFailure = Extract<ProxyOutcome, { ok: false }>;
 
-  const path = args.request.path || '/';
+/**
+ * Validate the target + path guards (path shape, private/loopback, plaintext
+ * http, DNS-resolves-to-private) WITHOUT making the downstream call or touching
+ * the secret. Returns a failure outcome, or null if the request may proceed.
+ * Exposed so the route can run the guards BEFORE charging a use / spending an
+ * approval, so a guard-rejected proxy never burns a maxUses slot.
+ */
+export async function precheckProxyTarget(target: string, path: string): Promise<ProxyFailure | null> {
   if (!path.startsWith('/'))
     return { ok: false, reason: 'bad_request', message: 'path must start with /' };
 
-  const { scheme: targetScheme, host, basePath } = parseTarget(args.target);
+  const { scheme: targetScheme, host } = parseTarget(target);
   const bareHost = hostnameOf(host);
 
   // Guard order: string checks (no network) first, DNS resolution last.
@@ -286,6 +300,26 @@ export async function proxyRequest(args: {
       message: 'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
     };
   }
+
+  return null;
+}
+
+export async function proxyRequest(args: {
+  target: string;
+  type: string;
+  injection: Injection | null;
+  secret: string;
+  request: ProxyRequest;
+}): Promise<ProxyOutcome> {
+  const { secret } = args;
+  const injection = args.injection ?? defaultInjection(args.type);
+
+  const path = args.request.path || '/';
+  const pre = await precheckProxyTarget(args.target, path);
+  if (pre) return pre;
+
+  const { scheme: targetScheme, host, basePath } = parseTarget(args.target);
+  const scheme = targetScheme ?? 'https';
 
   // Build the URL: host is pinned, agent controls path + query only.
   let url: URL;
