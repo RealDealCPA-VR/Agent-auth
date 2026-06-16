@@ -432,62 +432,78 @@ export async function proxyRequest(args: {
   return await new Promise<ProxyOutcome>((resolve) => {
     let settled = false;
     let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
     const finish = (o: ProxyOutcome) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve(o);
     };
 
-    const req = lib.request(
-      {
-        protocol: url.protocol,
-        hostname: url.hostname,
-        port: url.port ? Number(url.port) : scheme === 'https' ? 443 : 80,
-        path: `${url.pathname}${url.search}`,
-        method,
-        headers,
-        lookup, // pin to validated IPs — no redirect is ever followed by node here
-        servername: scheme === 'https' ? url.hostname : undefined, // correct TLS SNI
-      },
-      (res) => {
-        readCappedBytes(res, cap + maxVariant + 8).then((raw) => {
-          let body = redactAll(raw.toString('utf8'), variants);
-          if (Buffer.byteLength(body) > cap)
-            body = Buffer.from(body, 'utf8').subarray(0, cap).toString('utf8');
-          const outHeaders: Record<string, string> = {};
-          for (const [k, v] of Object.entries(res.headers)) {
-            if (v == null) continue;
-            // Redact the secret from BOTH the header name and value — a reflecting
-            // downstream could echo input into either.
-            outHeaders[redactAll(k, variants)] = redactAll(
-              Array.isArray(v) ? v.join(', ') : String(v),
-              variants,
-            );
-          }
-          finish({ ok: true, response: { status: res.statusCode ?? 0, headers: outHeaders, body } });
-        });
-      },
-    );
+    // request() throws SYNCHRONOUSLY on a malformed header (the schema rejects
+    // these first, so this is belt-and-suspenders) — keep the contract: resolve a
+    // structured ProxyOutcome, never reject the promise.
+    try {
+      const req = lib.request(
+        {
+          protocol: url.protocol,
+          hostname: url.hostname,
+          port: url.port ? Number(url.port) : scheme === 'https' ? 443 : 80,
+          path: `${url.pathname}${url.search}`,
+          method,
+          headers,
+          lookup, // pin to validated IPs — no redirect is ever followed by node here
+          servername: scheme === 'https' ? url.hostname : undefined, // correct TLS SNI
+        },
+        (res) => {
+          readCappedBytes(res, cap + maxVariant + 8).then((raw) => {
+            let body = redactAll(raw.toString('utf8'), variants);
+            if (Buffer.byteLength(body) > cap)
+              body = Buffer.from(body, 'utf8').subarray(0, cap).toString('utf8');
+            const outHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(res.headers)) {
+              if (v == null) continue;
+              // Redact the secret from BOTH the header name and value — a reflecting
+              // downstream could echo input into either.
+              outHeaders[redactAll(k, variants)] = redactAll(
+                Array.isArray(v) ? v.join(', ') : String(v),
+                variants,
+              );
+            }
+            finish({
+              ok: true,
+              response: { status: res.statusCode ?? 0, headers: outHeaders, body },
+            });
+          });
+        },
+      );
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      req.destroy();
-    }, env.PROXY_TIMEOUT_MS);
+      timer = setTimeout(() => {
+        timedOut = true;
+        req.destroy();
+      }, env.PROXY_TIMEOUT_MS);
 
-    req.on('error', (err: NodeJS.ErrnoException) => {
-      if (timedOut)
-        return finish({ ok: false, reason: 'timeout', message: 'downstream request timed out' });
-      if (err?.code === BLOCKED_CODE)
-        return finish({
+      req.on('error', (err: NodeJS.ErrnoException) => {
+        if (timedOut)
+          return finish({ ok: false, reason: 'timeout', message: 'downstream request timed out' });
+        if (err?.code === BLOCKED_CODE)
+          return finish({
+            ok: false,
+            reason: 'forbidden_target',
+            message:
+              'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
+          });
+        finish({
           ok: false,
-          reason: 'forbidden_target',
-          message: 'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
+          reason: 'upstream_unreachable',
+          message: 'failed to reach the downstream target',
         });
-      finish({ ok: false, reason: 'upstream_unreachable', message: 'failed to reach the downstream target' });
-    });
+      });
 
-    if (hasBody) req.write(args.request.body);
-    req.end();
+      if (hasBody) req.write(args.request.body);
+      req.end();
+    } catch {
+      finish({ ok: false, reason: 'bad_request', message: 'invalid request header' });
+    }
   });
 }

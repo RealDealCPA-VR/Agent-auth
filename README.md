@@ -219,7 +219,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 147 tests, all green
+## 🧪 Tested like a vault — 149 tests, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.

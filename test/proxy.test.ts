@@ -2,6 +2,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
+// NOTE: do NOT statically import anything that loads src/env.js here — env must be
+// set (PROXY_ALLOW_PRIVATE) before the env module first loads. proxyRequest is
+// imported dynamically in beforeAll for the same reason as the helpers.
+type ProxyRequestFn = typeof import('../src/lib/proxy.js').proxyRequest;
 
 // Proxy mode injects credentials server-side and pins the host to the target, so
 // we point the credential at a local mock downstream and assert (a) the injected
@@ -15,6 +19,7 @@ let server: http.Server;
 let port = 0;
 let app: FastifyInstance;
 let h: typeof import('./helpers.js');
+let proxyRequest: ProxyRequestFn;
 const saved = process.env.PROXY_ALLOW_PRIVATE;
 
 beforeAll(async () => {
@@ -60,6 +65,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
   h = await import('./helpers.js');
+  proxyRequest = (await import('../src/lib/proxy.js')).proxyRequest;
   app = await h.makeApp();
 });
 
@@ -244,6 +250,42 @@ describe('proxy mode', () => {
     const keys = Object.keys(headers).join(',');
     expect(keys).not.toContain(tok);
     expect(keys).toContain('x-saw-[redacted]');
+  });
+
+  it('rejects a malformed agent header with 400 and does not burn a maxUses slot', async () => {
+    const { token, pp } = await setup();
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'capped2',
+      type: 'api_key',
+      secret: SECRET,
+      maxUses: 1,
+    });
+    const agent = await h.issueAgent(app, token, pp, ['vault:proxy', 'target:*']);
+    // Invalid header name (contains a space) — rejected at the schema, before any use.
+    const bad = await proxy(agent.apiKey, cred.id, {
+      method: 'GET',
+      path: '/whoami',
+      headers: { 'x y': '1' },
+    });
+    expect(bad.statusCode).toBe(400);
+    // The single use is intact — the malformed request never reached the client.
+    const okRes = await proxy(agent.apiKey, cred.id, { method: 'GET', path: '/whoami' });
+    expect(okRes.statusCode).toBe(200);
+  });
+
+  it('proxyRequest RESOLVES (never throws) on a header the HTTP client rejects', async () => {
+    // Belt-and-suspenders: even if a bad header reaches proxyRequest, it returns a
+    // structured outcome rather than rejecting the promise. (Loopback allowed here.)
+    const outcome = await proxyRequest({
+      target: `http://localhost:${port}`,
+      type: 'api_key',
+      injection: { mode: 'bearer' },
+      secret: SECRET,
+      request: { method: 'GET', path: '/whoami', headers: { 'bad\r\nname': 'x' } },
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toBe('bad_request');
   });
 
   it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {

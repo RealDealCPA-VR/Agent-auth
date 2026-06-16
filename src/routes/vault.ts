@@ -9,13 +9,29 @@ import { proxyRequest, precheckProxyTarget } from '../lib/proxy.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
+// Header names must be valid HTTP tokens; values must be visible ASCII (+ SP/HT)
+// with no CR/LF/NUL/control chars. Reject malformed agent headers here so they
+// can't reach the HTTP client (which throws synchronously on them) — and so a
+// bad header is a 400 BEFORE any credential use is charged.
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const HEADER_VALUE_RE = /^[\t\x20-\x7e\x80-\xff]*$/;
+const headersSchema = z
+  .record(z.string())
+  .refine(
+    (h) =>
+      Object.entries(h).every(
+        ([k, v]) => HEADER_NAME_RE.test(k) && HEADER_VALUE_RE.test(v),
+      ),
+    { message: 'invalid header name or value' },
+  );
+
 // Body for proxy mode: the agent controls method/path/query/body/headers only —
 // the host is pinned to the credential's target server-side.
 const proxyBodySchema = z.object({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).default('GET'),
   path: z.string().max(4096).startsWith('/', 'path must start with /').default('/'),
   query: z.record(z.string()).optional(),
-  headers: z.record(z.string()).optional(),
+  headers: headersSchema.optional(),
   body: z.string().max(1_048_576).optional(),
 });
 
