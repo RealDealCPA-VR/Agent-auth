@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { env } from '../env.js';
 
 /**
@@ -11,9 +13,13 @@ import { env } from '../env.js';
  *   - Redirects are NOT followed (a 3xx is returned as-is) so the credential
  *     can't be leaked to a redirect target.
  *   - Plaintext http to a non-loopback host is refused unless PROXY_ALLOW_HTTP.
- *   - Private/loopback/link-local hosts are refused unless PROXY_ALLOW_PRIVATE
- *     (SSRF / cloud-metadata guard).
- *   - The raw secret is redacted from the returned body.
+ *   - Private/loopback/link-local/cloud-metadata hosts are refused unless
+ *     PROXY_ALLOW_PRIVATE — both as a literal (incl. bracketed IPv6 and
+ *     IPv4-mapped IPv6) AND after DNS resolution, so a public name that resolves
+ *     to a private address is also rejected (SSRF / cloud-metadata guard).
+ *   - The raw secret (and its base64 form) is redacted, best-effort and
+ *     case-insensitively, from BOTH the returned body and the response headers,
+ *     so a downstream that reflects the credential can't hand it back.
  */
 
 export type Injection =
@@ -62,15 +68,48 @@ function defaultInjection(type: string): Injection {
   return type === 'cookie' ? { mode: 'cookie' } : { mode: 'bearer' };
 }
 
+/**
+ * Reduce a URL `host` (the value `new URL().host` returns, or a bare `host:port`)
+ * to a clean lowercase hostname for the SSRF checks: strips IPv6 brackets, the
+ * port, and a single trailing FQDN dot. A naive `host.split(':')[0]` mangles a
+ * bracketed IPv6 literal to `"["` and bypasses every check — this does not.
+ */
+function hostnameOf(host: string): string {
+  let h = host.trim();
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    if (end >= 0) h = h.slice(1, end); // inside the brackets, drop any `]:port`
+  } else {
+    const colon = h.indexOf(':');
+    if (colon >= 0) h = h.slice(0, colon); // strip :port (IPv4/hostname only)
+  }
+  return h.replace(/\.$/, '').toLowerCase(); // strip a single trailing dot
+}
+
+/** If `h` is an IPv4-mapped IPv6 literal, return the embedded dotted IPv4. */
+function unmapIpv4(h: string): string {
+  if (!h.startsWith('::ffff:')) return h;
+  const mapped = h.slice('::ffff:'.length);
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(mapped)) return mapped; // ::ffff:127.0.0.1
+  const parts = mapped.split(':'); // ::ffff:7f00:1 (hex word form)
+  const [w0, w1] = parts;
+  if (parts.length === 2 && w0 && w1 && /^[0-9a-f]{1,4}$/.test(w0) && /^[0-9a-f]{1,4}$/.test(w1)) {
+    const hi = parseInt(w0, 16);
+    const lo = parseInt(w1, 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return h;
+}
+
 function isLoopbackHost(host: string): boolean {
-  const h = host.toLowerCase();
+  const h = unmapIpv4(host.toLowerCase());
   if (h === 'localhost' || h.endsWith('.localhost') || h === '::1') return true;
   const m = h.match(/^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/);
   return m ? Number(m[1]) === 127 : false;
 }
 
 function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase();
+  const h = unmapIpv4(host.toLowerCase());
   if (isLoopbackHost(h)) return true;
   if (h === 'metadata.google.internal' || h === 'metadata') return true;
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
@@ -82,9 +121,26 @@ function isPrivateHost(host: string): boolean {
     if (a === 192 && b === 168) return true;
     if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
   }
-  // Rough IPv6 private/link-local/loopback.
-  if (h.startsWith('fd') || h.startsWith('fc') || h.startsWith('fe80') || h === '::1') return true;
+  // IPv6 unspecified, unique-local (fc00::/7) and link-local (fe80::/10).
+  if (h === '::' || h.startsWith('fd') || h.startsWith('fc') || h.startsWith('fe80')) return true;
   return false;
+}
+
+/**
+ * Resolve a hostname and report whether ANY resolved address is private. Closes
+ * the public-name-that-points-at-a-private-IP vector (e.g. a DNS record for
+ * 169.254.169.254). IP literals are already covered by the string check, so they
+ * skip resolution. A resolution failure returns false — the subsequent fetch
+ * then fails as `upstream_unreachable`, never a default-allow to a real host.
+ */
+async function resolvesToPrivate(hostname: string): Promise<boolean> {
+  if (isIP(hostname)) return false; // literal — already string-checked
+  try {
+    const addrs = await dnsLookup(hostname, { all: true });
+    return addrs.some((a) => isPrivateHost(a.address));
+  } catch {
+    return false;
+  }
 }
 
 /** Split a stored target into scheme (if any), host, and base path. */
@@ -112,6 +168,68 @@ function parseTarget(target: string): { scheme: string | null; host: string; bas
   return { scheme: null, host: target, basePath: '' };
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The on-the-wire forms a downstream might reflect: the raw secret and its base64
+ * encoding (basic-auth / token payloads). Redaction is exact + case-insensitive;
+ * it cannot catch every transformation (gzip, arbitrary chunking) and is a
+ * defense-in-depth layer behind the primary invariant that the secret is only
+ * ever injected server-side, never sent to the agent.
+ */
+function secretVariants(secret: string): string[] {
+  if (secret.length === 0) return [];
+  const out = new Set<string>([secret]);
+  try {
+    out.add(Buffer.from(secret).toString('base64'));
+    out.add(Buffer.from(secret).toString('base64url'));
+  } catch {
+    /* ignore */
+  }
+  return [...out].filter((v) => v.length > 0);
+}
+
+function redactAll(text: string, variants: string[]): string {
+  let out = text;
+  for (const v of variants) {
+    out = out.replace(new RegExp(escapeRegExp(v), 'gi'), '[redacted]');
+  }
+  return out;
+}
+
+/**
+ * Read the response body into memory bounded by the byte cap. We over-read by the
+ * longest secret variant so a secret straddling the cap boundary is still fully
+ * present for redaction (which happens BEFORE the final truncate), then enforce
+ * the byte cap on the redacted text.
+ */
+async function readCappedBytes(res: Response, cap: number): Promise<Buffer> {
+  const stream = res.body;
+  if (!stream) return Buffer.from(await res.arrayBuffer());
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (total < cap) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        let chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        if (total + chunk.byteLength > cap) chunk = chunk.subarray(0, cap - total);
+        chunks.push(chunk);
+        total += chunk.byteLength;
+      }
+    }
+  } catch {
+    /* return whatever we managed to read */
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function proxyRequest(args: {
   target: string;
   type: string;
@@ -127,8 +245,9 @@ export async function proxyRequest(args: {
     return { ok: false, reason: 'bad_request', message: 'path must start with /' };
 
   const { scheme: targetScheme, host, basePath } = parseTarget(args.target);
-  const bareHost = host.split(':')[0] ?? host;
+  const bareHost = hostnameOf(host);
 
+  // Guard order: string checks (no network) first, DNS resolution last.
   if (!env.PROXY_ALLOW_PRIVATE && isPrivateHost(bareHost)) {
     return {
       ok: false,
@@ -143,6 +262,14 @@ export async function proxyRequest(args: {
       ok: false,
       reason: 'forbidden_target',
       message: 'refusing to send a credential over plaintext http to a non-loopback host',
+    };
+  }
+
+  if (!env.PROXY_ALLOW_PRIVATE && (await resolvesToPrivate(bareHost))) {
+    return {
+      ok: false,
+      reason: 'forbidden_target',
+      message: 'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
     };
   }
 
@@ -210,15 +337,18 @@ export async function proxyRequest(args: {
   }
   clearTimeout(timer);
 
-  // Read the body with a size cap; redact the raw secret defensively.
-  let body = await res.text();
-  if (body.length > env.PROXY_MAX_RESPONSE_BYTES)
-    body = body.slice(0, env.PROXY_MAX_RESPONSE_BYTES);
-  if (secret.length > 0) body = body.split(secret).join('[redacted]');
+  // Redact the secret (and base64 form) from EVERYTHING the agent sees — both
+  // the body and the response headers — before applying the byte cap.
+  const variants = secretVariants(secret);
+  const maxVariant = variants.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 0);
+  const cap = env.PROXY_MAX_RESPONSE_BYTES;
+  const raw = await readCappedBytes(res, cap + maxVariant + 8);
+  let body = redactAll(raw.toString('utf8'), variants);
+  if (Buffer.byteLength(body) > cap) body = Buffer.from(body, 'utf8').subarray(0, cap).toString('utf8');
 
   const outHeaders: Record<string, string> = {};
   res.headers.forEach((v, k) => {
-    outHeaders[k] = v;
+    outHeaders[k] = redactAll(v, variants);
   });
 
   return { ok: true, response: { status: res.status, headers: outHeaders, body } };

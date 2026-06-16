@@ -44,7 +44,24 @@ function targetCondition(scopes: string[]): SQL | undefined {
         )!,
       );
     } else {
-      conds.push(eq(schema.credentials.target, pat));
+      // The host may have been deposited bare (`api.acme.com`), as a URL
+      // (`https://api.acme.com/v1`), or with a port (`api.acme.com:8080`). Match
+      // the host at a boundary in each form. Patterns are anchored and host
+      // scopes contain no SQL-LIKE metacharacters (validated at issuance), so
+      // these can't over-match a different host (`api.acme.com.evil` won't match).
+      conds.push(
+        or(
+          eq(schema.credentials.target, pat),
+          like(schema.credentials.target, `${pat}:%`),
+          like(schema.credentials.target, `${pat}/%`),
+          like(schema.credentials.target, `http://${pat}`),
+          like(schema.credentials.target, `https://${pat}`),
+          like(schema.credentials.target, `http://${pat}:%`),
+          like(schema.credentials.target, `https://${pat}:%`),
+          like(schema.credentials.target, `http://${pat}/%`),
+          like(schema.credentials.target, `https://${pat}/%`),
+        )!,
+      );
     }
   }
   return or(...conds);
@@ -324,7 +341,9 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         ip: req.ip,
       });
 
-      // Return the downstream response — the secret is never included.
+      // Return the downstream response. The secret is never sent downstream to
+      // the agent: it is injected server-side, and redacted from the returned
+      // body and headers should the downstream reflect it.
       return reply.send(outcome.response);
     },
   );

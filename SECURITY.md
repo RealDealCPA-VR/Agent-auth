@@ -47,9 +47,16 @@ guarantees:
 - **No plaintext HTTP to non-loopback.** Proxying a secret over cleartext `http://`
   to a non-loopback host is refused unless `PROXY_ALLOW_HTTP=true`.
 - **No private/metadata hosts.** Requests to private, link-local, and cloud
-  metadata addresses are refused unless `PROXY_ALLOW_PRIVATE=true`.
-- **Secret redacted from the response.** The returned `body` (and headers) have the
-  injected secret redacted, so it never reaches the agent even by reflection.
+  metadata addresses are refused unless `PROXY_ALLOW_PRIVATE=true` — checked both
+  as a literal (including bracketed and IPv4-mapped IPv6) **and after DNS
+  resolution**, so a public name that resolves to a private/metadata address is
+  rejected too.
+- **Secret redacted from the response.** The returned `body` **and** response
+  headers have the injected secret (and its base64 form) redacted best-effort,
+  case-insensitively, so a downstream that reflects the credential (e.g. in
+  `Set-Cookie` or an echoed header) can't hand it back. This is defense in depth
+  behind the primary invariant: the secret is only ever injected server-side and
+  is never sent to the agent in the first place.
 - **Same policy envelope as `use`.** Scope/target checks, max-use counts, time
   windows, approval gates, OAuth refresh, and audit logging all still apply; a
   bounded timeout (`PROXY_TIMEOUT_MS`) and response cap (`PROXY_MAX_RESPONSE_BYTES`)

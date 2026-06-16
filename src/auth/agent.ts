@@ -88,16 +88,39 @@ export function hasScope(scopes: string[], required: string): boolean {
 }
 
 /**
+ * Reduce a stored target to a bare lowercase host so a `target:<host>` scope
+ * matches regardless of how the credential was deposited. A target may be a bare
+ * host (`github.com`), a URL (`https://api.acme.com/v1`), or `host:port`
+ * (`localhost:8080`) — scopes are always bare hosts (HOST_RE), so we compare on
+ * the host alone. Mirrors parseTarget()/hostnameOf() in lib/proxy.ts.
+ */
+export function targetHost(target: string): string {
+  let h = target.trim();
+  const scheme = h.match(/^https?:\/\//i);
+  if (scheme) h = h.slice(scheme[0].length);
+  const slash = h.indexOf('/');
+  if (slash >= 0) h = h.slice(0, slash); // drop any path
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    if (end >= 0) h = h.slice(1, end); // bracketed IPv6
+  } else {
+    const colon = h.indexOf(':');
+    if (colon >= 0) h = h.slice(0, colon); // drop :port
+  }
+  return h.replace(/\.$/, '').toLowerCase();
+}
+
+/**
  * Target scoping. Supports exact host (`github.com`), full wildcard (`*`), and
  * single-label subdomain wildcard (`*.example.com` matches `api.example.com` but
  * NOT the apex `example.com` and NOT a deeper `a.b.example.com` — grant those
  * explicitly). An agent with no `target:` scope is unconstrained.
  */
 export function matchesTargetPattern(pattern: string, target: string): boolean {
-  // Hostnames are case-insensitive — compare in lowercase. Targets and patterns
-  // are also normalized to lowercase at storage time; this is defense in depth.
+  // Hostnames are case-insensitive — compare in lowercase. The stored target may
+  // be a URL or host:port form, so reduce it to its bare host before comparing.
   const p = pattern.toLowerCase();
-  const t = target.toLowerCase();
+  const t = targetHost(target);
   if (p === '*') return true;
   if (p.startsWith('*.')) {
     const suffix = p.slice(2);

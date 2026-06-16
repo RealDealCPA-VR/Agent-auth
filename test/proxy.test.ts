@@ -33,6 +33,16 @@ beforeAll(async () => {
       } else if (url.startsWith('/echo')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ method: req.method, url, body }));
+      } else if (url.startsWith('/reflect')) {
+        // A hostile/echoing downstream that reflects the injected secret back in
+        // response headers (Set-Cookie + an echoed auth header).
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': `session=${req.headers.authorization ?? ''}`,
+          'x-echo-auth': req.headers.authorization ?? '',
+          'x-echo-cookie': req.headers.cookie ?? '',
+        });
+        res.end(JSON.stringify({ ok: true }));
       } else if (url.startsWith('/redirect')) {
         res.writeHead(302, { location: 'http://evil.example/' });
         res.end();
@@ -128,6 +138,21 @@ describe('proxy mode', () => {
     const { apiKey, credId } = await setup();
     const res = await proxy(apiKey, credId, { method: 'POST', path: '/echo', body: 'hello-body' });
     expect(res.json().body).toBe('{"method":"POST","url":"/echo","body":"hello-body"}');
+  });
+
+  it('redacts the secret from REFLECTED response headers (Set-Cookie / echoed header)', async () => {
+    const { apiKey, credId } = await setup();
+    const res = await proxy(apiKey, credId, { method: 'GET', path: '/reflect' });
+    expect(res.statusCode).toBe(200);
+    // The whole response the agent receives — headers included — must not carry
+    // the raw secret, even though the downstream reflected it back.
+    const blob = JSON.stringify(res.json());
+    expect(blob).not.toContain(SECRET);
+    expect(blob).toContain('[redacted]');
+    // And specifically the response headers are scrubbed.
+    const headers = res.json().headers as Record<string, string>;
+    expect(JSON.stringify(headers)).not.toContain(SECRET);
+    expect(headers['x-echo-auth']).toContain('[redacted]');
   });
 
   it('does NOT follow redirects (returns the 3xx as-is)', async () => {
