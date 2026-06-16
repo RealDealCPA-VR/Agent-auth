@@ -1,6 +1,13 @@
-import { isIP } from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
+import { isIP, type LookupFunction } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import type { LookupAddress, LookupOptions } from 'node:dns';
 import { env } from '../env.js';
+
+// Sentinel on the lookup error so a blocked private/metadata resolution maps to
+// forbidden_target (not a generic connection failure).
+const BLOCKED_CODE = 'EAGENTAUTHBLOCKED';
 
 /**
  * Proxy mode: AgentAuth makes the downstream request server-side and injects the
@@ -151,6 +158,12 @@ function isPrivateHost(host: string): boolean {
  * 169.254.169.254). IP literals are already covered by the string check, so they
  * skip resolution. A resolution failure returns false — the subsequent fetch
  * then fails as `upstream_unreachable`, never a default-allow to a real host.
+ *
+ * This is the pre-charge gate (so a private target is rejected before a use is
+ * billed). The actual connection is additionally pinned to validated addresses
+ * via makePinnedLookup, so a DNS name that rebinds between this check and the
+ * connect cannot reach a private address either — the socket only dials IPs that
+ * passed validation at connect time.
  */
 async function resolvesToPrivate(hostname: string): Promise<boolean> {
   if (isIP(hostname)) return false; // literal — already string-checked
@@ -229,34 +242,78 @@ function redactAll(text: string, variants: string[]): string {
 }
 
 /**
- * Read the response body into memory bounded by the byte cap. We over-read by the
- * longest secret variant so a secret straddling the cap boundary is still fully
- * present for redaction (which happens BEFORE the final truncate), then enforce
- * the byte cap on the redacted text.
+ * Read a Node response stream into memory bounded by the byte cap. We over-read
+ * by the longest secret variant so a secret straddling the cap boundary is still
+ * fully present for redaction (which happens BEFORE the final truncate), then
+ * enforce the byte cap on the redacted text.
  */
-async function readCappedBytes(res: Response, cap: number): Promise<Buffer> {
-  const stream = res.body;
-  if (!stream) return Buffer.from(await res.arrayBuffer());
-  const reader = stream.getReader();
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    while (total < cap) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value && value.byteLength > 0) {
-        let chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-        if (total + chunk.byteLength > cap) chunk = chunk.subarray(0, cap - total);
-        chunks.push(chunk);
-        total += chunk.byteLength;
+function readCappedBytes(res: http.IncomingMessage, cap: number): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve(Buffer.concat(chunks));
+    };
+    res.on('data', (c: Buffer) => {
+      if (total >= cap) return;
+      let chunk = c;
+      if (total + chunk.byteLength > cap) {
+        chunk = chunk.subarray(0, cap - total);
+        res.destroy();
       }
-    }
-  } catch {
-    /* return whatever we managed to read */
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  return Buffer.concat(chunks);
+      chunks.push(chunk);
+      total += chunk.byteLength;
+      if (total >= cap) finish();
+    });
+    res.on('end', finish);
+    res.on('close', finish);
+    res.on('error', finish);
+  });
+}
+
+/**
+ * A DNS lookup that resolves the name, rejects it if ANY resolved address is
+ * private/metadata (unless allowed), and returns ONLY the validated addresses —
+ * so the socket connects to exactly what we checked. Using the same resolution
+ * for validation and connection closes the DNS-rebinding TOCTOU that a separate
+ * pre-check + fetch (which re-resolves) would leave open.
+ */
+function makePinnedLookup(allowPrivate: boolean): LookupFunction {
+  const fn = (
+    hostname: string,
+    options: LookupOptions,
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      address: string | LookupAddress[],
+      family?: number,
+    ) => void,
+  ): void => {
+    dnsLookup(hostname, { all: true })
+      .then((addrs) => {
+        const usable = addrs.filter((a) => allowPrivate || !isPrivateHost(a.address));
+        if (usable.length === 0) {
+          const err = Object.assign(
+            new Error('target resolves to a private/metadata address'),
+            { code: BLOCKED_CODE },
+          ) as NodeJS.ErrnoException;
+          callback(err, '', 0);
+          return;
+        }
+        if (options && options.all) {
+          callback(
+            null,
+            usable.map((a) => ({ address: a.address, family: a.family })),
+          );
+        } else {
+          callback(null, usable[0]!.address, usable[0]!.family);
+        }
+      })
+      .catch((err) => callback(err as NodeJS.ErrnoException, '', 0));
+  };
+  return fn as unknown as LookupFunction;
 }
 
 type ProxyFailure = Extract<ProxyOutcome, { ok: false }>;
@@ -361,43 +418,69 @@ export async function proxyRequest(args: {
   const method = (args.request.method || 'GET').toUpperCase();
   const hasBody = !['GET', 'HEAD'].includes(method) && args.request.body != null;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), env.PROXY_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method,
-      headers,
-      body: hasBody ? args.request.body : undefined,
-      redirect: 'manual', // never follow — don't leak the credential to a 3xx host
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if ((err as Error)?.name === 'AbortError') {
-      return { ok: false, reason: 'timeout', message: 'downstream request timed out' };
-    }
-    return {
-      ok: false,
-      reason: 'upstream_unreachable',
-      message: 'failed to reach the downstream target',
-    };
-  }
-  clearTimeout(timer);
-
-  // Redact the secret (and base64 form) from EVERYTHING the agent sees — both
-  // the body and the response headers — before applying the byte cap.
+  // Redact the secret (and base64 / url-encoded forms) from EVERYTHING the agent
+  // sees — body and response headers — before applying the byte cap.
   const variants = secretVariants(secret);
   const maxVariant = variants.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 0);
   const cap = env.PROXY_MAX_RESPONSE_BYTES;
-  const raw = await readCappedBytes(res, cap + maxVariant + 8);
-  let body = redactAll(raw.toString('utf8'), variants);
-  if (Buffer.byteLength(body) > cap) body = Buffer.from(body, 'utf8').subarray(0, cap).toString('utf8');
 
-  const outHeaders: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    outHeaders[k] = redactAll(v, variants);
+  const lib = scheme === 'https' ? https : http;
+  const lookup = makePinnedLookup(env.PROXY_ALLOW_PRIVATE);
+
+  return await new Promise<ProxyOutcome>((resolve) => {
+    let settled = false;
+    let timedOut = false;
+    const finish = (o: ProxyOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(o);
+    };
+
+    const req = lib.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port ? Number(url.port) : scheme === 'https' ? 443 : 80,
+        path: `${url.pathname}${url.search}`,
+        method,
+        headers,
+        lookup, // pin to validated IPs — no redirect is ever followed by node here
+        servername: scheme === 'https' ? url.hostname : undefined, // correct TLS SNI
+      },
+      (res) => {
+        readCappedBytes(res, cap + maxVariant + 8).then((raw) => {
+          let body = redactAll(raw.toString('utf8'), variants);
+          if (Buffer.byteLength(body) > cap)
+            body = Buffer.from(body, 'utf8').subarray(0, cap).toString('utf8');
+          const outHeaders: Record<string, string> = {};
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (v == null) continue;
+            outHeaders[k] = redactAll(Array.isArray(v) ? v.join(', ') : String(v), variants);
+          }
+          finish({ ok: true, response: { status: res.statusCode ?? 0, headers: outHeaders, body } });
+        });
+      },
+    );
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      req.destroy();
+    }, env.PROXY_TIMEOUT_MS);
+
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      if (timedOut)
+        return finish({ ok: false, reason: 'timeout', message: 'downstream request timed out' });
+      if (err?.code === BLOCKED_CODE)
+        return finish({
+          ok: false,
+          reason: 'forbidden_target',
+          message: 'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
+        });
+      finish({ ok: false, reason: 'upstream_unreachable', message: 'failed to reach the downstream target' });
+    });
+
+    if (hasBody) req.write(args.request.body);
+    req.end();
   });
-
-  return { ok: true, response: { status: res.status, headers: outHeaders, body } };
 }

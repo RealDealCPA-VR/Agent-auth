@@ -48,9 +48,12 @@ guarantees:
   to a non-loopback host is refused unless `PROXY_ALLOW_HTTP=true`.
 - **No private/metadata hosts.** Requests to private, link-local, and cloud
   metadata addresses are refused unless `PROXY_ALLOW_PRIVATE=true` — checked both
-  as a literal (including bracketed and IPv4-mapped IPv6) **and after DNS
-  resolution**, so a public name that resolves to a private/metadata address is
-  rejected too.
+  as a literal (including bracketed/IPv4-mapped IPv6 and decimal/hex/octal IPv4
+  encodings) **and after DNS resolution**, so a public name that resolves to a
+  private/metadata address is rejected too. The connection is **pinned to the
+  validated IP addresses** (a custom DNS `lookup` reused for both the check and
+  the socket), so a name that *rebinds* between check and connect can't reach a
+  private address either — the socket only dials addresses that passed validation.
 - **Secret redacted from the response.** The returned `body` **and** response
   headers have the injected secret (and its base64 form) redacted best-effort,
   case-insensitively, so a downstream that reflects the credential (e.g. in

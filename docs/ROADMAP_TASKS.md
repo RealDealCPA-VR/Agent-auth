@@ -76,3 +76,7 @@ status table + Handoff Log below before finishing.
 - P3 DONE (agent): packages/mcp-server — stdio MCP server (@modelcontextprotocol/sdk 1.29) exposing list_credentials + use_credential, self-contained fetch client, 8 vitest, README w/ Claude Desktop config. VERIFIED LIVE: MCP client spawned the server against the running stack and use_credential returned the real secret.
 - P4 DONE (agent): SDKs publish-ready (sdk-ts npm pack dry-run clean dist-only; sdk-py builds wheel+sdist) + examples/{ts-agent,python-agent} (typecheck/import verified).
 - P5 DONE (orch): end-to-end verified — docker stack + `agentauth:init` key + deposit + vault use → secret; MCP server live use_credential → secret; regression gauntlet green (server 127, mcp 8; monorepo 202 tests incl sdk-ts 30, sdk-py 26, web 11). README quickstart (one-command docker) + MCP/examples ecosystem entries added.
+
+## Proxy mode (2026-06-15)
+
+- PX DONE: server-side credential injection (`POST /v1/vault/credentials/:id/proxy`, scope `vault:proxy`) so the secret never reaches the agent; SDK-TS/PY + MCP clients; host-pinned, no-redirect, no plaintext-http, SSRF/metadata guard (literal incl. bracketed/IPv4-mapped IPv6 + decimal/hex/octal IPv4 encodings, AND post-DNS resolution), **connection pinned to validated IPs (node:http(s) + custom `lookup`) so DNS rebinding can't reach a private address**, body+header secret redaction, charge-after-validate (a guard-rejected proxy never burns a maxUses slot). Hardened across a 5-round adversarial verification loop (12→3→8→1→0 findings). Server tests green.
