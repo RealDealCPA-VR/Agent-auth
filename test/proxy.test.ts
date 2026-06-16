@@ -43,6 +43,11 @@ beforeAll(async () => {
           'x-echo-cookie': req.headers.cookie ?? '',
         });
         res.end(JSON.stringify({ ok: true }));
+      } else if (url.startsWith('/hdrname')) {
+        // Reflect the injected cookie value into a response header NAME.
+        const c = (req.headers.cookie ?? 'none').replace(/[^a-z0-9-]/gi, '') || 'none';
+        res.writeHead(200, { 'content-type': 'application/json', [`x-saw-${c}`]: '1' });
+        res.end(JSON.stringify({ ok: true }));
       } else if (url.startsWith('/redirect')) {
         res.writeHead(302, { location: 'http://evil.example/' });
         res.end();
@@ -198,6 +203,47 @@ describe('proxy mode', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().items.length).toBeGreaterThan(0);
+  });
+
+  it('redacts a query-mode secret with special chars (! ( ) ~ space) when the URL is reflected', async () => {
+    const { token, pp } = await setup();
+    const special = "sk-live-A!B(C)D~E withspace";
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'q',
+      type: 'api_key',
+      secret: special,
+      injection: { mode: 'query', name: 'api_key' },
+    });
+    const agent = await h.issueAgent(app, token, pp, ['vault:proxy', 'target:*']);
+    // /echo reflects req.url (which carries the injected ?api_key=<secret>) back.
+    const res = await proxy(agent.apiKey, cred.id, { method: 'GET', path: '/echo' });
+    expect(res.statusCode).toBe(200);
+    const blob = JSON.stringify(res.json());
+    // Neither the raw secret nor its exact on-wire (form-encoded) bytes may leak.
+    const wire = new URLSearchParams([['k', special]]).toString().slice(2);
+    expect(blob).not.toContain(special);
+    expect(blob).not.toContain(wire);
+    expect(blob).toContain('[redacted]');
+  });
+
+  it('redacts the secret from a reflected response header NAME, not just the value', async () => {
+    const { token, pp } = await setup();
+    const tok = 'simpletoken-abc123'; // header-name-safe
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'c',
+      type: 'cookie',
+      secret: tok,
+      injection: { mode: 'cookie' },
+    });
+    const agent = await h.issueAgent(app, token, pp, ['vault:proxy', 'target:*']);
+    const res = await proxy(agent.apiKey, cred.id, { method: 'GET', path: '/hdrname' });
+    expect(res.statusCode).toBe(200);
+    const headers = res.json().headers as Record<string, string>;
+    const keys = Object.keys(headers).join(',');
+    expect(keys).not.toContain(tok);
+    expect(keys).toContain('x-saw-[redacted]');
   });
 
   it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {

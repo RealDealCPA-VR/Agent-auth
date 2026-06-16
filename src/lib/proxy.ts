@@ -220,15 +220,17 @@ function secretVariants(secret: string): string[] {
   } catch {
     /* ignore */
   }
-  // Percent-encoded forms: query-mode injection puts the secret through
-  // url.searchParams (application/x-www-form-urlencoded on the wire — note a
-  // space becomes '+', not %20), and a downstream may reflect the request
-  // URL/query back. Cover both the %-encoded and the '+'-for-space wire forms.
+  // Encoded forms a downstream might reflect: query-mode injection puts the
+  // secret through url.searchParams, so cover the EXACT application/x-www-form-
+  // urlencoded bytes it emits (space->'+', and ! ' ( ) ~ -> %21 %27 %28 %29 %7E,
+  // which encodeURIComponent does NOT encode) by deriving the variant the same
+  // way the request does; also cover the plain percent-encoded form (e.g. a
+  // Location header echoing the URL with %20).
   for (const v of [...out]) {
     const enc = encodeURIComponent(v);
     if (enc !== v) out.add(enc);
-    const formEnc = enc.replace(/%20/g, '+');
-    if (formEnc !== v) out.add(formEnc);
+    const wire = new URLSearchParams([['k', v]]).toString().slice(2);
+    if (wire !== v) out.add(wire);
   }
   return [...out].filter((v) => v.length > 0);
 }
@@ -456,7 +458,12 @@ export async function proxyRequest(args: {
           const outHeaders: Record<string, string> = {};
           for (const [k, v] of Object.entries(res.headers)) {
             if (v == null) continue;
-            outHeaders[k] = redactAll(Array.isArray(v) ? v.join(', ') : String(v), variants);
+            // Redact the secret from BOTH the header name and value — a reflecting
+            // downstream could echo input into either.
+            outHeaders[redactAll(k, variants)] = redactAll(
+              Array.isArray(v) ? v.join(', ') : String(v),
+              variants,
+            );
           }
           finish({ ok: true, response: { status: res.statusCode ?? 0, headers: outHeaders, body } });
         });
