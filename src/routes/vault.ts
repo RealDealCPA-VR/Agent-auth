@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { and, count, desc, eq, like, notLike, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
@@ -45,39 +45,23 @@ const proxyBodySchema = z.object({
 function targetCondition(scopes: string[]): SQL | undefined {
   const pats = scopes.filter((s) => s.startsWith('target:')).map((s) => s.slice('target:'.length));
   if (pats.length === 0 || pats.includes('*')) return undefined;
+  // Reduce the stored target to its bare host IN SQL — strip an http(s):// scheme,
+  // everything from the first ':' or '/', and a trailing dot — so the list
+  // predicate matches exactly what allowsTarget()/targetHost() authorize for
+  // use/proxy, regardless of whether the target was deposited bare, as a URL, or
+  // with a port/path. (Comparing on the real host avoids both the under-listing
+  // and any LIKE over-matching of a host embedded in a path.)
+  const host = sql`rtrim(regexp_replace(regexp_replace(lower(${schema.credentials.target}), '^https?://', ''), '[:/].*$', ''), '.')`;
   const conds: SQL[] = [];
   for (const raw of pats) {
-    const pat = raw.toLowerCase(); // targets are stored lowercase (case-insensitive hosts)
+    const pat = raw.toLowerCase(); // hosts are case-insensitive
     if (pat.startsWith('*.')) {
       // Single-label subdomain only (api.example.com, not a.b.example.com or the
-      // apex) — mirrors matchesTargetPattern(). Host patterns are validated at
-      // issuance to contain no SQL-LIKE metacharacters.
+      // apex) — mirrors matchesTargetPattern(). `pat` is bound as a parameter.
       const suffix = pat.slice(2);
-      conds.push(
-        and(
-          like(schema.credentials.target, `%.${suffix}`),
-          notLike(schema.credentials.target, `%.%.${suffix}`),
-        )!,
-      );
+      conds.push(sql`(${host} LIKE ${'%.' + suffix} AND ${host} NOT LIKE ${'%.%.' + suffix})`);
     } else {
-      // The host may have been deposited bare (`api.acme.com`), as a URL
-      // (`https://api.acme.com/v1`), or with a port (`api.acme.com:8080`). Match
-      // the host at a boundary in each form. Patterns are anchored and host
-      // scopes contain no SQL-LIKE metacharacters (validated at issuance), so
-      // these can't over-match a different host (`api.acme.com.evil` won't match).
-      conds.push(
-        or(
-          eq(schema.credentials.target, pat),
-          like(schema.credentials.target, `${pat}:%`),
-          like(schema.credentials.target, `${pat}/%`),
-          like(schema.credentials.target, `http://${pat}`),
-          like(schema.credentials.target, `https://${pat}`),
-          like(schema.credentials.target, `http://${pat}:%`),
-          like(schema.credentials.target, `https://${pat}:%`),
-          like(schema.credentials.target, `http://${pat}/%`),
-          like(schema.credentials.target, `https://${pat}/%`),
-        )!,
-      );
+      conds.push(sql`${host} = ${pat}`);
     }
   }
   return or(...conds);
@@ -290,7 +274,10 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         );
 
       // Validate target-scope + the SSRF/path guards BEFORE charging a use, so a
-      // rejected proxy never burns a maxUses slot or spends an approval grant.
+      // proxy rejected by these pre-charge checks never burns a maxUses slot or
+      // spends an approval grant. (A connect-time block — e.g. a DNS rebind caught
+      // by the pinned lookup — can still occur after the charge; that is a rare,
+      // fail-closed backstop, not the common guard path.)
       const meta = await getCredentialTarget(agent.passportId, id);
       if (!meta) return deny('not_found', 404, 'not_found', 'credential not found');
       if (!allowsTarget(agent.scopes, meta.target)) {

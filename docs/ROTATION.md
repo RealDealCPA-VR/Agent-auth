@@ -93,24 +93,37 @@ key by `kid`, so a roll never invalidates already-issued sessions.
 Each audit row records the `hash_key_id` that signed it, and chain verification
 selects the key per row, so old rows keep verifying after a roll.
 
-1. Generate a new key, choose a new id (e.g. `a2`). The current active key is
-   either `AUDIT_HMAC_SECRET` or, if unset, derived from `MASTER_KEY` — capture its
-   bytes before rotating so you can retire it.
-2. Deploy:
+1. Generate a new key, choose a new id (e.g. `a2`). Capture the **current active
+   key's bytes** before rotating so you can retire it, and note **the key id your
+   existing rows were signed under** (this is what you retire it as):
+   - If `AUDIT_HMAC_SECRET` was already set, the stored kid is the bare
+     `AUDIT_KEY_ID` (e.g. `a1`); retire under that.
+   - If it was unset (derived mode — the default), the audit key was derived from
+     `MASTER_KEY` and rows were signed under the **master-qualified** kid
+     `<AUDIT_KEY_ID>~<MASTER_KEY_ID>` (e.g. `a1~k1`). Retire under that exact kid,
+     and the bytes are `HMAC-SHA256(base64-decode(MASTER_KEY), 'agentauth-audit-chain-v1')`,
+     not the raw `MASTER_KEY`.
+2. Deploy (example for a derived-mode install whose rows are signed `a1~k1`):
    ```bash
-   AUDIT_HMAC_SECRET=<new-base64>  \
-   AUDIT_KEY_ID=a2                \
-   AUDIT_KEYS_RETIRED='{"a1":"<old-base64>"}'
+   AUDIT_HMAC_SECRET=<new-base64>            \
+   AUDIT_KEY_ID=a2                          \
+   AUDIT_KEYS_RETIRED='{"a1~k1":"<old-derived-base64>"}'
    ```
-   New rows are signed with `a2`; `GET /v1/audit/verify` still validates older `a1`
-   rows. Audit rows are append-only and permanent, so **keep retired audit keys for
-   as long as you retain audit history.**
+   New rows are signed with `a2`; `GET /v1/audit/verify` still validates older rows
+   under their original kid. Audit rows are append-only and permanent, so **keep
+   retired audit keys for as long as you retain audit history.** (Retiring under the
+   wrong kid — e.g. bare `a1` for a derived install — makes verify report the whole
+   history as tampered.)
 
 ---
 
 ## Scheduling rotation (KEK re-wrap)
 
-`pnpm db:rotate` is safe to run on a schedule. Example Kubernetes CronJob that
+The re-wrap is safe to run on a schedule. **In the shipped Docker image run the
+compiled entrypoint `node dist/db/rotate-keys.js`** — the runtime image has no
+`pnpm`/`tsx`/`src` (those are build-time only), so `pnpm db:rotate` is for local
+dev only and would fail in-container. This mirrors how migrations run in
+`docker-compose.yml` (`node dist/db/migrate.js`). Example Kubernetes CronJob that
 re-wraps DEKs nightly (env injected from your secret store):
 
 ```yaml
@@ -129,15 +142,15 @@ spec:
           containers:
             - name: rotate
               image: agentauth:latest
-              command: ['pnpm', 'db:rotate']
+              command: ['node', 'dist/db/rotate-keys.js']
               envFrom:
                 - secretRef:
                     name: agentauth-secrets
 ```
 
 systemd timer equivalent: a `agentauth-rotate.service` running
-`pnpm db:rotate` (with the env file) plus an `agentauth-rotate.timer` on
-`OnCalendar=*-*-* 03:17:00`.
+`node dist/db/rotate-keys.js` (with the env file) plus an `agentauth-rotate.timer`
+on `OnCalendar=*-*-* 03:17:00`.
 
 The actual key _material_ roll (steps 1–2 above) is a deploy-time action — change
 the env, ship, then let the scheduled `db:rotate` converge existing data.

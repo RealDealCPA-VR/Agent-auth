@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { generateDek, seal, open, type SealedBox, type WrappedKey } from '../crypto/envelope.js';
 import { wrapDek, unwrapDek } from '../crypto/keyprovider/index.js';
-import { requestOrConsume } from './approvals.js';
+import { requestOrConsume, refundGrant } from './approvals.js';
 import { getProvider } from '../oauth/registry.js';
 import { needsRefresh, refreshToken, type TokenSet } from '../oauth/tokens.js';
 import type { Injection } from './proxy.js';
@@ -257,16 +257,26 @@ export async function useCredential(
   // Human-in-the-loop gate. Resolve approval BEFORE reserving a use so a pending
   // or denied attempt never consumes a maxUses slot. A live approval is consumed
   // here (single-use); on approval we fall through to unseal.
+  let consumedGrantId: string | null = null;
   if (cred.requireApproval) {
     const decision = await requestOrConsume(passportId, credentialId, opts.agentId!);
     if (decision.decision === 'pending')
       return { status: 'approval_pending', requestId: decision.requestId };
     if (decision.decision === 'denied') return { status: 'approval_denied' };
-    // decision === 'approved' -> proceed.
+    // approved -> the single-use grant is now spent; refund it if this attempt
+    // ultimately fails to deliver the secret (use_limit / decrypt / refresh).
+    consumedGrantId = decision.grantId;
   }
 
+  // Return a non-delivery status, first restoring a consumed approval grant so a
+  // rejected attempt never burns the human's one-shot approval.
+  const undelivered = async (result: UseResult): Promise<UseResult> => {
+    if (consumedGrantId) await refundGrant(consumedGrantId);
+    return result;
+  };
+
   const dek = await loadDek(passportId);
-  if (!dek) return { status: 'not_found' };
+  if (!dek) return undelivered({ status: 'not_found' });
   const aad = Buffer.from(`${passportId}:${cred.target}`);
   try {
     const plaintextBuf = open(dek, cred.sealed as SealedBox, aad);
@@ -280,10 +290,10 @@ export async function useCredential(
       try {
         tokens = JSON.parse(secret) as TokenSet;
       } catch {
-        return { status: 'decrypt_error' };
+        return undelivered({ status: 'decrypt_error' });
       }
       const access = await freshOauthAccessToken(passportId, cred, tokens, dek, aad);
-      if (access === null) return { status: 'refresh_failed' };
+      if (access === null) return undelivered({ status: 'refresh_failed' });
       secret = access;
     }
 
@@ -302,7 +312,7 @@ export async function useCredential(
           ),
         )
         .returning({ useCount: schema.credentials.useCount });
-      if (reserved.length === 0) return { status: 'use_limit' };
+      if (reserved.length === 0) return undelivered({ status: 'use_limit' });
     } else {
       // Track usage for unlimited credentials too (best-effort).
       await db
@@ -324,7 +334,7 @@ export async function useCredential(
     };
   } catch {
     // Tampering, wrong key, or corruption — never surface crypto internals.
-    return { status: 'decrypt_error' };
+    return undelivered({ status: 'decrypt_error' });
   } finally {
     dek.fill(0);
     aad.fill(0); // scrub for consistency (AAD is non-secret)

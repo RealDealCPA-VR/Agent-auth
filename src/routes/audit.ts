@@ -47,6 +47,7 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
               seq: schema.auditEvents.seq,
               action: schema.auditEvents.action,
               success: schema.auditEvents.success,
+              principalId: schema.auditEvents.principalId,
               passportId: schema.auditEvents.passportId,
               agentId: schema.auditEvents.agentId,
               credentialId: schema.auditEvents.credentialId,

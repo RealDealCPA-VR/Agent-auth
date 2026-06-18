@@ -118,7 +118,7 @@ console.log(agent.apiKey); // ⚠️ shown exactly once — capture it now
 await human.revokeAgent(agent.id);
 
 // Audit:
-const { ok, brokenAtSeq } = await human.verifyAudit();
+const { ok } = await human.verifyAudit(); // server exposes only the integrity boolean
 ```
 
 You can also register and obtain a raw token without constructing a client:

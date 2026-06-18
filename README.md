@@ -219,7 +219,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 149 tests, all green
+## 🧪 Tested like a vault — 155 tests, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.
@@ -264,7 +264,7 @@ single request.
 ## ✅ What ships today
 
 - 🔐 **KMS-backed keys** — `KEY_PROVIDER=kms` keeps the master key in AWS KMS; the in-process key never holds it. Local AES-GCM KEK is the default.
-- 🔁 **Zero-downtime key rotation** — KEK, JWT signing key, and audit HMAC key are all versioned and rotatable. See the [rotation runbook](./docs/ROTATION.md); `pnpm db:rotate` re-wraps passports.
+- 🔁 **Zero-downtime key rotation** — KEK, JWT signing key, and audit HMAC key are all versioned and rotatable. See the [rotation runbook](./docs/ROTATION.md); the re-wrap runs via `pnpm db:rotate` (local) / `node dist/db/rotate-keys.js` (in the shipped image).
 - 🪪 **OAuth credential capture** — authorize a provider in the browser once (PKCE auth-code); AgentAuth seals the tokens and **transparently refreshes** them when an agent uses the credential.
 - 📜 **Per-credential policies** — max-uses, time windows, and **human approval workflows** (request → approve → single-use grant) gate sensitive credentials.
 - 🌐 **mTLS agent identity** — agents can authenticate with a client certificate (native or proxy-terminated) instead of a bearer key.

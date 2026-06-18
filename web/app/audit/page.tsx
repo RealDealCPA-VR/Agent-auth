@@ -100,10 +100,10 @@ function AuditView() {
             <tbody>
               {events.map((ev, i) => {
                 const when = field(ev, 'createdAt', 'timestamp', 'at');
-                // The server returns agentId/principalId for the actor; the
-                // affected target lives inside `detail` (else fall back to the
-                // credentialId). field() only reads top-level keys.
-                const actor = field(ev, 'agentId', 'principalId');
+                // Actor = who acted: the human (principalId) for owner actions,
+                // else the agent (agentId) for agent actions. The affected target
+                // lives inside `detail` (else fall back to credentialId).
+                const actor = field(ev, 'principalId', 'agentId');
                 const detail = (ev.detail ?? {}) as Record<string, unknown>;
                 const target =
                   typeof detail.target === 'string' && detail.target

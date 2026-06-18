@@ -222,6 +222,7 @@ export interface AuditEvent {
   seq?: number;
   action?: string;
   success?: boolean;
+  principalId?: string | null;
   passportId?: string | null;
   agentId?: string | null;
   credentialId?: string | null;

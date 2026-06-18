@@ -15,7 +15,7 @@ function ttlFromNow(now: number): Date {
 }
 
 export type RequestDecision =
-  | { decision: 'approved' }
+  | { decision: 'approved'; grantId: string }
   | { decision: 'pending'; requestId: string }
   | { decision: 'denied' };
 
@@ -70,7 +70,8 @@ export async function requestOrConsume(
             ),
           )
           .returning({ id: schema.approvalRequests.id });
-        if (consumed.length > 0) return { decision: 'approved' as const };
+        if (consumed.length > 0)
+          return { decision: 'approved' as const, grantId: latest.id };
       } else if (latest.status === 'denied') {
         return { decision: 'denied' as const };
       } else if (latest.status === 'pending') {
@@ -85,6 +86,19 @@ export async function requestOrConsume(
       .returning({ id: schema.approvalRequests.id });
     return { decision: 'pending' as const, requestId: created!.id };
   });
+}
+
+/**
+ * Restore a single-use approval grant that was consumed for a use that did not
+ * ultimately deliver the secret (e.g. the maxUses slot was exhausted, or the
+ * secret failed to unseal/refresh). Best-effort: only clears `consumedAt`, so the
+ * still-live grant can be spent by a genuine retry.
+ */
+export async function refundGrant(grantId: string): Promise<void> {
+  await db
+    .update(schema.approvalRequests)
+    .set({ consumedAt: null })
+    .where(eq(schema.approvalRequests.id, grantId));
 }
 
 /** Pending, non-expired requests across the given (owned) passports. */

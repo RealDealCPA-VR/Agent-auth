@@ -14,9 +14,13 @@ import { rotateWrappedDek, getActiveKeyId } from '../crypto/keyprovider/index.js
  * deposit running concurrently with rotation cannot be corrupted (it seals with
  * the same DEK regardless of which KEK currently wraps it).
  *
- * Run after deploying a new KEK:
+ * Run after deploying a new KEK (local dev uses `pnpm db:rotate`; the shipped
+ * Docker image has no pnpm/tsx/src, so run the compiled entrypoint there):
  *
+ *   # local dev
  *   MASTER_KEY=<new> MASTER_KEY_ID=k2 MASTER_KEYS_RETIRED='{"k1":"<old>"}' pnpm db:rotate
+ *   # in the production image
+ *   MASTER_KEY=<new> MASTER_KEY_ID=k2 MASTER_KEYS_RETIRED='{"k1":"<old>"}' node dist/db/rotate-keys.js
  */
 async function main(): Promise<void> {
   const passports = await db

@@ -324,8 +324,10 @@ type ProxyFailure = Extract<ProxyOutcome, { ok: false }>;
  * Validate the target + path guards (path shape, private/loopback, plaintext
  * http, DNS-resolves-to-private) WITHOUT making the downstream call or touching
  * the secret. Returns a failure outcome, or null if the request may proceed.
- * Exposed so the route can run the guards BEFORE charging a use / spending an
- * approval, so a guard-rejected proxy never burns a maxUses slot.
+ * Exposed so the route can run these guards BEFORE charging a use / spending an
+ * approval, so a proxy rejected by the pre-charge checks never burns a maxUses
+ * slot. (The connect-time pinned-lookup block for a DNS rebind is a separate,
+ * rare backstop that can fire after the charge.)
  */
 export async function precheckProxyTarget(target: string, path: string): Promise<ProxyFailure | null> {
   if (!path.startsWith('/'))

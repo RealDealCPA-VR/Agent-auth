@@ -18,9 +18,33 @@ export async function makeApp(): Promise<FastifyInstance> {
   return app;
 }
 
-/** Truncate every table between tests for isolation. */
+// Same advisory lock the audit append path holds (src/lib/audit.ts AUDIT_LOCK).
+const AUDIT_LOCK = 4242421;
+
+/**
+ * Truncate every table between tests for isolation. A best-effort audit write from
+ * a just-finished request can still be in flight at a file boundary; its
+ * transaction-scoped advisory lock + row insert into audit_events can deadlock
+ * with a bare TRUNCATE (ACCESS EXCLUSIVE) acquired in the opposite order. We take
+ * the SAME advisory lock first so the truncate serializes with any append instead,
+ * and retry the rare deadlock/lock-timeout victim.
+ */
 export async function resetDb(): Promise<void> {
-  await sql`TRUNCATE principals, passports, credentials, agents, approval_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await sql.begin(async (tx) => {
+        await tx`SET LOCAL lock_timeout = '8s'`;
+        await tx`SELECT pg_advisory_xact_lock(${AUDIT_LOCK})`;
+        await tx`TRUNCATE principals, passports, credentials, agents, approval_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
+      });
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      // 40P01 = deadlock_detected, 55P03 = lock_not_available (lock_timeout).
+      if ((code === '40P01' || code === '55P03') && attempt < 5) continue;
+      throw err;
+    }
+  }
 }
 
 export function auth(token: string): Record<string, string> {

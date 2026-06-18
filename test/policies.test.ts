@@ -97,6 +97,27 @@ describe('per-credential policies', () => {
     expect((await use(inScope.apiKey, credId)).statusCode).toBe(200);
   });
 
+  it('does NOT burn the approval grant when the use is then rejected with use_limit', async () => {
+    const { token, apiKey, credId } = await setup({ maxUses: 1, requireApproval: true });
+    // Agent requests; human approves (grant now live).
+    const pending = await use(apiKey, credId);
+    expect(pending.statusCode).toBe(202);
+    const { requestId } = pending.json();
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${requestId}/approve`,
+      headers: auth(token),
+    });
+    expect(approved.statusCode).toBe(200);
+    // Another agent races and consumes the single maxUses slot.
+    await sql.unsafe(`UPDATE credentials SET use_count = 1 WHERE id = '${credId}'`);
+    // The approved agent retries -> 429 use_limit; its grant must be refunded.
+    expect((await use(apiKey, credId)).statusCode).toBe(429);
+    // Free the slot; the still-live grant delivers WITHOUT a fresh approval.
+    await sql.unsafe(`UPDATE credentials SET use_count = 0 WHERE id = '${credId}'`);
+    expect((await use(apiKey, credId)).statusCode).toBe(200);
+  });
+
   it('a decrypt failure returns 500 WITHOUT burning a maxUses slot', async () => {
     const { apiKey, credId } = await setup({ maxUses: 1 });
     // Corrupt the stored auth tag (valid 16-byte length, wrong bytes) so the

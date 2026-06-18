@@ -110,6 +110,51 @@ describe('target scoping + expiry (integration)', () => {
     }
   });
 
+  it('wildcard list matches URL-form and host:port subdomain targets (list == use)', async () => {
+    const { token } = await registerAndLogin(app);
+    const pp = await createPassport(app, token);
+    // Single-label subdomains deposited in various forms — all visible + usable.
+    const allowed = ['api.example.com', 'https://web.example.com/v1', 'cache.example.com:8080'];
+    // Forms whose bare host is NOT a single-label subdomain — must stay excluded
+    // (incl. a host embedded in a path, which must not over-match).
+    const denied = ['https://example.com', 'https://a.b.example.com/x', 'evil.com/api.example.com'];
+    const ids: Record<string, string> = {};
+    for (const t of [...allowed, ...denied]) {
+      const r = await deposit(app, token, pp, { target: t, label: t, type: 'api_key', secret: `s_${t}` });
+      ids[t] = r.id;
+    }
+    const agent = await issueAgent(app, token, pp, [
+      'vault:read',
+      'vault:use',
+      'target:*.example.com',
+    ]);
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/vault/credentials',
+      headers: auth(agent.apiKey),
+    });
+    const listed = (list.json().items as Array<{ target: string }>).map((i) => i.target).sort();
+    expect(listed).toEqual([...allowed].sort());
+    // Everything listed is genuinely usable, and everything excluded 403s — the
+    // list predicate and the runtime scope check agree.
+    for (const t of allowed) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/v1/vault/credentials/${ids[t]}/use`,
+        headers: auth(agent.apiKey),
+      });
+      expect(res.statusCode, `target ${t} must be usable`).toBe(200);
+    }
+    for (const t of denied) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/v1/vault/credentials/${ids[t]}/use`,
+        headers: auth(agent.apiKey),
+      });
+      expect(res.statusCode, `target ${t} must be forbidden`).toBe(403);
+    }
+  });
+
   it('target matching is case-insensitive end-to-end', async () => {
     const { token } = await registerAndLogin(app);
     const pp = await createPassport(app, token);

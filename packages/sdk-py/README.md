@@ -130,7 +130,7 @@ client.revoke_agent(agent["id"])
 
 # Audit
 client.list_audit(limit=50)
-client.verify_audit()              # {ok, count, brokenAtSeq}
+client.verify_audit()              # {ok} (integrity boolean only)
 ```
 
 `login()` stores the token on the client and sets the `Authorization` header for

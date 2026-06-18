@@ -35,11 +35,12 @@ export function fingerprintFromPem(pem: string): string {
  *
  *  - proxy mode (MTLS_TRUSTED_PROXY): read MTLS_FP_HEADER, forwarded by a trusted
  *    TLS-terminating reverse proxy that already verified the client cert.
- *  - native mode: read the peer certificate off the TLS socket. We accept the
- *    cert's fingerprint whenever the socket presented one (the server runs with
- *    rejectUnauthorized:false so unauthenticated requests still reach handlers and
- *    can fall back to bearer auth); authorization is decided by the fingerprint
- *    lookup, not by the socket's `authorized` flag alone.
+ *  - native mode: read the peer certificate off the TLS socket, but ONLY if the
+ *    TLS layer actually verified it against MTLS_CA (`socket.authorized === true`).
+ *    The server runs with rejectUnauthorized:false so a connection that presents
+ *    no/invalid cert still reaches handlers and can fall back to bearer auth — for
+ *    those we return null. Requiring `authorized` means CA trust, cert validity,
+ *    and CA-side revocation are all honored, not just the fingerprint.
  */
 export function extractClientFingerprint(req: FastifyRequest): string | null {
   if (!env.MTLS_ENABLED) return null;
@@ -52,9 +53,12 @@ export function extractClientFingerprint(req: FastifyRequest): string | null {
     return fp.length > 0 ? fp : null;
   }
 
-  // Native mode: pull the peer cert off the TLS socket.
+  // Native mode: pull the peer cert off the TLS socket — but only trust it if the
+  // chain verified against MTLS_CA. An unauthorized/absent cert falls through to
+  // bearer auth (null fingerprint).
   const socket = req.socket as TLSSocket;
   if (typeof socket.getPeerCertificate !== 'function') return null;
+  if (socket.authorized !== true) return null;
   const cert = socket.getPeerCertificate();
   if (!cert || !cert.fingerprint256) return null;
   const fp = normalizeFingerprint(cert.fingerprint256);
