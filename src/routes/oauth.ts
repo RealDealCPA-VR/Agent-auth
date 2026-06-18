@@ -162,8 +162,8 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
           codeVerifier: flow.codeVerifier,
         });
       } catch {
-        // Never surface provider internals; leave the flow row to expire so a
-        // genuine retry of the same state can't reuse a spent code.
+        // Never surface provider internals; delete the flow row so the spent
+        // state/code can't be retried (a later attempt hits invalid_state above).
         await db.delete(schema.oauthFlows).where(eq(schema.oauthFlows.id, flow.id));
         return fail(
           req,

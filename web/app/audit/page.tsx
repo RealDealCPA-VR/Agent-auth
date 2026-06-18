@@ -73,14 +73,11 @@ function AuditView() {
       {verify &&
         (verify.ok ? (
           <div className="alert success">
-            <strong>Chain intact.</strong> Verified {verify.count} event
-            {verify.count === 1 ? '' : 's'} — no tampering detected.
+            <strong>Chain intact.</strong> No tampering detected.
           </div>
         ) : (
           <div className="alert error">
-            <strong>Chain broken.</strong> Tamper detected at sequence{' '}
-            <span className="mono">{verify.brokenAtSeq ?? '?'}</span> (
-            {verify.count} events checked).
+            <strong>Chain broken.</strong> Tampering detected in the audit log.
           </div>
         ))}
 
@@ -103,6 +100,15 @@ function AuditView() {
             <tbody>
               {events.map((ev, i) => {
                 const when = field(ev, 'createdAt', 'timestamp', 'at');
+                // The server returns agentId/principalId for the actor; the
+                // affected target lives inside `detail` (else fall back to the
+                // credentialId). field() only reads top-level keys.
+                const actor = field(ev, 'agentId', 'principalId');
+                const detail = (ev.detail ?? {}) as Record<string, unknown>;
+                const target =
+                  typeof detail.target === 'string' && detail.target
+                    ? detail.target
+                    : field(ev, 'credentialId');
                 return (
                   <tr key={field(ev, 'id', 'seq') || i}>
                     <td className="mono">{field(ev, 'seq') || '—'}</td>
@@ -111,10 +117,8 @@ function AuditView() {
                         {field(ev, 'action', 'type', 'event') || 'event'}
                       </span>
                     </td>
-                    <td className="mono">{field(ev, 'actor', 'actorId') || '—'}</td>
-                    <td className="mono">
-                      {field(ev, 'target', 'resource') || '—'}
-                    </td>
+                    <td className="mono">{actor || '—'}</td>
+                    <td className="mono">{target || '—'}</td>
                     <td className="muted">
                       {when ? new Date(when).toLocaleString() : '—'}
                     </td>

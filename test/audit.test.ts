@@ -142,7 +142,9 @@ describe('audit trail + tamper evidence', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.ok).toBe(true);
-    expect(body.brokenAtSeq).toBeNull();
+    // Only the boolean is exposed — no cross-tenant count/seq leak.
+    expect(body.brokenAtSeq).toBeUndefined();
+    expect(body.count).toBeUndefined();
   });
 
   it('detects tampering by reporting the broken sequence number', async () => {
@@ -167,7 +169,6 @@ describe('audit trail + tamper evidence', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.ok).toBe(false);
-    expect(body.brokenAtSeq).toBe(brokenSeq);
   });
 
   it('blocks a normal DELETE via the append-only trigger', async () => {

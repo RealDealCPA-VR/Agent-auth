@@ -19,6 +19,7 @@ const ALGO = 'aes-256-gcm';
 export const ALG_ID = 'A256GCM';
 export const FORMAT_VERSION = 1;
 const IV_BYTES = 12; // GCM standard nonce length
+const TAG_BYTES = 16; // full GCM auth tag — never accept a truncated one
 export const KEY_BYTES = 32; // AES-256
 
 export interface SealedBox {
@@ -53,9 +54,16 @@ export function seal(key: Buffer, plaintext: Buffer, aad?: Buffer): SealedBox {
 export function open(key: Buffer, box: SealedBox, aad?: Buffer): Buffer {
   if (box.v !== FORMAT_VERSION) throw new Error(`unsupported format version: ${box.v}`);
   if (box.alg !== ALG_ID) throw new Error(`unsupported alg: ${box.alg}`);
-  const decipher = createDecipheriv(ALGO, key, Buffer.from(box.iv, 'base64'));
+  const iv = Buffer.from(box.iv, 'base64');
+  const tag = Buffer.from(box.tag, 'base64');
+  // Reject a malformed IV/tag deterministically — Node's GCM otherwise accepts a
+  // truncated tag (down to 4 bytes), which weakens forgery resistance for an
+  // attacker who can write the ciphertext store. Treated as a tamper/decrypt fail.
+  if (iv.length !== IV_BYTES) throw new Error('invalid IV length');
+  if (tag.length !== TAG_BYTES) throw new Error('invalid auth tag length');
+  const decipher = createDecipheriv(ALGO, key, iv);
   if (aad) decipher.setAAD(aad);
-  decipher.setAuthTag(Buffer.from(box.tag, 'base64'));
+  decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(Buffer.from(box.ciphertext, 'base64')), decipher.final()]);
 }
 

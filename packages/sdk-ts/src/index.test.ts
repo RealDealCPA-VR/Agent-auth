@@ -522,10 +522,9 @@ describe('HumanClient admin operations', () => {
   });
 
   it('verifyAudit GETs the verify endpoint', async () => {
-    const { calls } = stubFetch([{ body: { ok: true, count: 42, brokenAtSeq: null } }]);
+    const { calls } = stubFetch([{ body: { ok: true } }]);
     const res = await client().verifyAudit();
     expect(res.ok).toBe(true);
-    expect(res.count).toBe(42);
     expect(calls[0]?.url).toBe(`${BASE}/v1/audit/verify`);
   });
 

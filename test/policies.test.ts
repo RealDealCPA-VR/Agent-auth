@@ -9,6 +9,7 @@ import {
   deposit,
   issueAgent,
 } from './helpers.js';
+import { sql } from '../src/db/index.js';
 
 let app: FastifyInstance;
 beforeAll(async () => {
@@ -83,5 +84,31 @@ describe('per-credential policies', () => {
   it('allows unlimited use when no policy is set', async () => {
     const { apiKey, credId } = await setup({});
     for (let i = 0; i < 5; i += 1) expect((await use(apiKey, credId)).statusCode).toBe(200);
+  });
+
+  it('an out-of-target-scope /use is denied 403 WITHOUT burning a maxUses slot', async () => {
+    const { token, pp, credId } = await setup({ maxUses: 1 });
+    // Agent authenticated to the passport but scoped for a different target.
+    const outOfScope = await issueAgent(app, token, pp, ['vault:use', 'target:other.example']);
+    const denied = await use(outOfScope.apiKey, credId);
+    expect(denied.statusCode).toBe(403);
+    // The single use must still be available to a correctly-scoped agent.
+    const inScope = await issueAgent(app, token, pp, ['vault:use', 'target:github.com']);
+    expect((await use(inScope.apiKey, credId)).statusCode).toBe(200);
+  });
+
+  it('a decrypt failure returns 500 WITHOUT burning a maxUses slot', async () => {
+    const { apiKey, credId } = await setup({ maxUses: 1 });
+    // Corrupt the stored auth tag (valid 16-byte length, wrong bytes) so the
+    // secret fails to unseal — the reservation must happen only after unseal.
+    await sql.unsafe(
+      `UPDATE credentials SET sealed = jsonb_set(sealed, '{tag}', '"AAAAAAAAAAAAAAAAAAAAAA=="') WHERE id = '${credId}'`,
+    );
+    const res = await use(apiKey, credId);
+    expect(res.statusCode).toBe(500);
+    const [row] = await sql.unsafe<{ use_count: number }[]>(
+      `SELECT use_count FROM credentials WHERE id = '${credId}'`,
+    );
+    expect(Number(row!.use_count)).toBe(0);
   });
 });

@@ -171,6 +171,16 @@ describe('mTLS binding (issuance)', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('binding a fingerprint already bound to another agent returns 409, not 500', async () => {
+    const { token, passportId, agentId } = await setup();
+    const first = await bind(token, agentId, { fingerprint: HEX64 });
+    expect(first.statusCode).toBe(200);
+    const other = await h.issueAgent(app, token, passportId, ['vault:use', 'target:*']);
+    const res = await bind(token, other.id, { fingerprint: HEX64 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('conflict');
+  });
+
   it('derives the fingerprint from a PEM cert matching node:crypto', async () => {
     const { token, agentId } = await setup();
     const pems = selfsigned.generate([{ name: 'commonName', value: 'agent.test' }], { days: 1 });

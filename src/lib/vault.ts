@@ -265,28 +265,6 @@ export async function useCredential(
     // decision === 'approved' -> proceed.
   }
 
-  // Reserve a use atomically so concurrent calls can't exceed maxUses.
-  if (cred.maxUses !== null) {
-    const reserved = await db
-      .update(schema.credentials)
-      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
-      .where(
-        and(
-          eq(schema.credentials.id, credentialId),
-          eq(schema.credentials.passportId, passportId),
-          sql`${schema.credentials.useCount} < ${schema.credentials.maxUses}`,
-        ),
-      )
-      .returning({ useCount: schema.credentials.useCount });
-    if (reserved.length === 0) return { status: 'use_limit' };
-  } else {
-    // Track usage for unlimited credentials too (best-effort).
-    await db
-      .update(schema.credentials)
-      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
-      .where(eq(schema.credentials.id, credentialId));
-  }
-
   const dek = await loadDek(passportId);
   if (!dek) return { status: 'not_found' };
   const aad = Buffer.from(`${passportId}:${cred.target}`);
@@ -307,6 +285,30 @@ export async function useCredential(
       const access = await freshOauthAccessToken(passportId, cred, tokens, dek, aad);
       if (access === null) return { status: 'refresh_failed' };
       secret = access;
+    }
+
+    // Reserve the use ONLY now that the secret is confirmed deliverable, so a
+    // decrypt/refresh failure above never burns a maxUses slot. Still atomic, so
+    // concurrent calls can't exceed maxUses.
+    if (cred.maxUses !== null) {
+      const reserved = await db
+        .update(schema.credentials)
+        .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+        .where(
+          and(
+            eq(schema.credentials.id, credentialId),
+            eq(schema.credentials.passportId, passportId),
+            sql`${schema.credentials.useCount} < ${schema.credentials.maxUses}`,
+          ),
+        )
+        .returning({ useCount: schema.credentials.useCount });
+      if (reserved.length === 0) return { status: 'use_limit' };
+    } else {
+      // Track usage for unlimited credentials too (best-effort).
+      await db
+        .update(schema.credentials)
+        .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+        .where(eq(schema.credentials.id, credentialId));
     }
 
     return {

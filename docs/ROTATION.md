@@ -44,11 +44,26 @@ the DEK itself, so every sealed credential stays decryptable throughout.
    This is idempotent — passports already on the active key are skipped — and prints
    `rotated N/total passport keys to active KEK "k2"`.
 4. Once `pnpm db:rotate` reports `0` remaining on the old key, remove the retired
-   entry on the next deploy (`MASTER_KEYS_RETIRED` empty).
+   entry on the next deploy (`MASTER_KEYS_RETIRED` empty) — **but see the audit-chain
+   note below before dropping it.**
 
 > Losing `MASTER_KEY` with no retired copy makes all DEKs (and therefore all
 > credentials) unrecoverable. Back the KEK up in a secret manager — or use the KMS
 > provider (below) so the KEK never lives in app config at all.
+
+> **Audit chain & the KEK.** When `AUDIT_HMAC_SECRET` is unset (the default), the
+> audit hash-chain key is derived from `MASTER_KEY`. The chain is kept verifiable
+> across a KEK rotation **automatically**: each master version signs audit rows
+> under a distinct key id (`<AUDIT_KEY_ID>~<MASTER_KEY_ID>`), and the server derives
+> the audit key for every entry still listed in `MASTER_KEYS_RETIRED`. So keep a
+> rotated-out master in `MASTER_KEYS_RETIRED` for **as long as you retain audit
+> history signed under it** — dropping it (step 4) makes rows signed under that
+> master fail `GET /v1/audit/verify`. To decouple the audit chain from the KEK
+> entirely, set an explicit `AUDIT_HMAC_SECRET` (section 3); then `MASTER_KEY`
+> rotation never affects audit verification. (One caveat: audit rows written by a
+> build **before** key-id qualification carry the bare `AUDIT_KEY_ID`; set an
+> explicit `AUDIT_HMAC_SECRET` before your first KEK rotation if you must keep that
+> pre-existing history verifiable.)
 
 ### KMS-backed KEK (no master key in app memory)
 

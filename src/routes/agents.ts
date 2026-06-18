@@ -244,21 +244,33 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         .limit(1);
       if (!row) return fail(req, reply, 404, 'not_found', 'agent not found');
 
-      await db.transaction(async (tx) => {
-        await tx.update(schema.agents).set({ certFingerprint: fp }).where(eq(schema.agents.id, id));
-        await audit(
-          {
-            action: 'agent.mtls_bind',
-            success: true,
-            principalId: req.human!.sub,
-            passportId: row.passportId,
-            agentId: id,
-            detail: { fingerprint: fp },
-            ip: req.ip,
-          },
-          tx,
-        );
-      });
+      // certFingerprint is globally UNIQUE; binding one already held by another
+      // agent must be a clean 409, not a leaked 500 (which would also be a
+      // cross-tenant existence oracle). Mirror the 23505 handling in principals.ts.
+      try {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(schema.agents)
+            .set({ certFingerprint: fp })
+            .where(eq(schema.agents.id, id));
+          await audit(
+            {
+              action: 'agent.mtls_bind',
+              success: true,
+              principalId: req.human!.sub,
+              passportId: row.passportId,
+              agentId: id,
+              detail: { fingerprint: fp },
+              ip: req.ip,
+            },
+            tx,
+          );
+        });
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505')
+          return fail(req, reply, 409, 'conflict', 'fingerprint already bound to another agent');
+        throw err;
+      }
 
       return reply.send({ id, certFingerprint: fp });
     },

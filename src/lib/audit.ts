@@ -48,25 +48,55 @@ function sanitizeIds(input: AuditInput): AuditInput {
   };
 }
 
-// Audit HMAC keyring (supports rotation). The active key is AUDIT_HMAC_SECRET, or
-// — for back-compat — derived from MASTER_KEY. Retired keys verify older rows.
-function deriveActiveAuditKey(): Buffer {
-  if (env.AUDIT_HMAC_SECRET) return Buffer.from(env.AUDIT_HMAC_SECRET, 'base64');
-  return createHmac('sha256', Buffer.from(env.MASTER_KEY, 'base64'))
+// Audit HMAC keyring (supports rotation). Every row stores the kid it was signed
+// with; verification resolves the key per-row, so retired keys verify older rows.
+function deriveAuditKeyFrom(masterB64: string): Buffer {
+  return createHmac('sha256', Buffer.from(masterB64, 'base64'))
     .update('agentauth-audit-chain-v1')
     .digest();
 }
 
-const AUDIT_KEY_ID = env.AUDIT_KEY_ID;
+// ACTIVE_AUDIT_KEY_ID is the kid written on NEW rows.
+//  - Explicit mode (AUDIT_HMAC_SECRET set): the audit key is independent of the
+//    KEK, so the kid is just AUDIT_KEY_ID.
+//  - Derived mode (default): the key is derived from MASTER_KEY and therefore
+//    CHANGES when MASTER_KEY rotates. We qualify the kid with MASTER_KEY_ID so
+//    each master version signs under a distinct kid, and we ALSO register keys
+//    derived from every retired MASTER_KEY — so rotating MASTER_KEY keeps old
+//    rows verifiable automatically, with no extra operator step. (A bare
+//    AUDIT_KEY_ID entry is kept for rows written before kid-qualification; such
+//    pre-existing history should set an explicit AUDIT_HMAC_SECRET before the
+//    first MASTER_KEY rotation — see docs/ROTATION.md.)
 const auditKeys = new Map<string, Buffer>();
-auditKeys.set(AUDIT_KEY_ID, deriveActiveAuditKey());
+let ACTIVE_AUDIT_KEY_ID: string;
+
+if (env.AUDIT_HMAC_SECRET) {
+  ACTIVE_AUDIT_KEY_ID = env.AUDIT_KEY_ID;
+  auditKeys.set(ACTIVE_AUDIT_KEY_ID, Buffer.from(env.AUDIT_HMAC_SECRET, 'base64'));
+} else {
+  ACTIVE_AUDIT_KEY_ID = `${env.AUDIT_KEY_ID}~${env.MASTER_KEY_ID}`;
+  auditKeys.set(ACTIVE_AUDIT_KEY_ID, deriveAuditKeyFrom(env.MASTER_KEY));
+  // Back-compat for rows written before kid-qualification (bare AUDIT_KEY_ID).
+  if (!auditKeys.has(env.AUDIT_KEY_ID))
+    auditKeys.set(env.AUDIT_KEY_ID, deriveAuditKeyFrom(env.MASTER_KEY));
+  // Derive an audit key from each retired MASTER_KEY so pre-rotation rows verify.
+  if (env.MASTER_KEYS_RETIRED) {
+    const retiredMasters = JSON.parse(env.MASTER_KEYS_RETIRED) as Record<string, string>;
+    for (const [mid, b64] of Object.entries(retiredMasters)) {
+      const kid = `${env.AUDIT_KEY_ID}~${mid}`;
+      if (!auditKeys.has(kid)) auditKeys.set(kid, deriveAuditKeyFrom(b64));
+    }
+  }
+}
+
+// Explicitly retired audit keys (for an audit-key rotation independent of the KEK).
 if (env.AUDIT_KEYS_RETIRED) {
   const retired = JSON.parse(env.AUDIT_KEYS_RETIRED) as Record<string, string>;
   for (const [kid, b64] of Object.entries(retired)) {
     if (!auditKeys.has(kid)) auditKeys.set(kid, Buffer.from(b64, 'base64'));
   }
 }
-const AUDIT_KEY = auditKeys.get(AUDIT_KEY_ID)!;
+const AUDIT_KEY = auditKeys.get(ACTIVE_AUDIT_KEY_ID)!;
 
 // Serializes audit appends so the hash chain stays linear under concurrency.
 const AUDIT_LOCK = 4242421;
@@ -127,7 +157,7 @@ async function appendWith(exec: Executor, input: AuditInput): Promise<void> {
     ip: input.ip ?? null,
     prevHash,
     hash,
-    hashKeyId: AUDIT_KEY_ID,
+    hashKeyId: ACTIVE_AUDIT_KEY_ID,
     createdAt,
   });
 }

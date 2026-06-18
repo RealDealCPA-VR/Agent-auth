@@ -75,8 +75,12 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async () => {
+      // The chain spans all tenants (prevHash links every row), so verification is
+      // necessarily global. Return ONLY the boolean integrity signal — exposing the
+      // global event `count` / `brokenAtSeq` to any self-registered human would leak
+      // cross-tenant aggregate activity. (Operators can read full detail from logs.)
       const result = await verifyAuditChain();
-      return result;
+      return { ok: result.ok };
     },
   );
 }

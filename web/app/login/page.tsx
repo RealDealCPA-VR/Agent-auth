@@ -68,7 +68,7 @@ export default function LoginPage() {
             type="password"
             autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
             required
-            minLength={mode === 'register' ? 8 : undefined}
+            minLength={mode === 'register' ? 10 : undefined}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />

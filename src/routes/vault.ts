@@ -174,6 +174,19 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
 
       if (!hasScope(agent.scopes, 'vault:use')) return deny('missing scope: vault:use');
 
+      // Validate target-scope BEFORE charging a use, so a rejected call never
+      // burns a maxUses slot or spends an approval grant (mirrors the proxy route).
+      const meta = await getCredentialTarget(agent.passportId, id);
+      if (!meta) return deny('not_found', 404, 'not_found', 'credential not found');
+      if (!allowsTarget(agent.scopes, meta.target)) {
+        return deny(
+          `target_not_allowed:${meta.target}`,
+          403,
+          'forbidden',
+          `agent not scoped for target: ${meta.target}`,
+        );
+      }
+
       const result = await useCredential(agent.passportId, id, { agentId: agent.agentId });
       if (result.status === 'not_found')
         return deny('not_found', 404, 'not_found', 'credential not found');
@@ -210,16 +223,6 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         return deny('refresh_failed', 502, 'oauth_refresh_failed', 'failed to refresh oauth token');
       if (result.status === 'decrypt_error')
         return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
-
-      // Enforce target-scoping after we know the target.
-      if (!allowsTarget(agent.scopes, result.target)) {
-        return deny(
-          `target_not_allowed:${result.target}`,
-          403,
-          'forbidden',
-          `agent not scoped for target: ${result.target}`,
-        );
-      }
 
       await audit({
         action: 'credential.use',

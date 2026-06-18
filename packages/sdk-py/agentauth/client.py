@@ -343,7 +343,8 @@ class HumanClient(_BaseClient):
         return self._request("GET", "/audit", params=_page_params(limit, offset))
 
     def verify_audit(self) -> JSON:
-        """Verify the audit hash-chain. Returns ``{ok, count, brokenAtSeq}``."""
+        """Verify the audit hash-chain. Returns ``{ok}`` (the boolean integrity
+        signal only; the global event count / broken sequence are not exposed)."""
         return self._request("GET", "/audit/verify")
 
     # -- approvals ---------------------------------------------------------

@@ -213,12 +213,12 @@ def test_list_audit_and_verify_audit():
         if request.url.path == "/v1/audit":
             return ok({"items": [{"seq": 1}], "pagination": {}})
         if request.url.path == "/v1/audit/verify":
-            return ok({"ok": True, "count": 1, "brokenAtSeq": None})
+            return ok({"ok": True})
         raise AssertionError(request.url.path)
 
     client = HumanClient(BASE, token="t", transport=make_transport(handler))
     assert client.list_audit()["items"] == [{"seq": 1}]
-    assert client.verify_audit() == {"ok": True, "count": 1, "brokenAtSeq": None}
+    assert client.verify_audit() == {"ok": True}
 
 
 # --------------------------------------------------------------------------

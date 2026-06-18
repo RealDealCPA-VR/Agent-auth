@@ -220,10 +220,12 @@ export interface IssuedAgent {
 export interface AuditEvent {
   id?: string;
   seq?: number;
-  type?: string;
   action?: string;
-  actor?: string;
-  target?: string;
+  success?: boolean;
+  passportId?: string | null;
+  agentId?: string | null;
+  credentialId?: string | null;
+  detail?: Record<string, unknown>;
   createdAt?: string;
   // The audit payload shape is open-ended; allow extra fields for display.
   [k: string]: unknown;
@@ -231,8 +233,6 @@ export interface AuditEvent {
 
 export interface AuditVerifyResult {
   ok: boolean;
-  count: number;
-  brokenAtSeq: number | null;
 }
 
 export type ApprovalStatus =

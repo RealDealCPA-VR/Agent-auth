@@ -148,22 +148,25 @@ export interface AgentSummary {
   lastUsedAt: string | null;
 }
 
-/** An audit log event. The server's payload is open-ended, so keep it permissive. */
+/** An audit log event, matching the GET /v1/audit response shape. Context such
+ * as the affected target lives inside `detail`. */
 export interface AuditEvent {
   id: string;
   seq: number;
-  type: string;
-  actor?: string | null;
-  target?: string | null;
+  action: string;
+  success: boolean;
+  passportId: string | null;
+  agentId: string | null;
+  credentialId: string | null;
+  detail: Record<string, unknown>;
   createdAt: string;
   [key: string]: unknown;
 }
 
-/** Result of the audit chain verifier. */
+/** Result of the audit chain verifier. The server returns only the boolean
+ * integrity signal (the global event count / broken sequence are not exposed). */
 export interface AuditVerification {
   ok: boolean;
-  count: number;
-  brokenAtSeq: number | null;
 }
 
 /** A human approval request for a credential whose policy requires approval. */

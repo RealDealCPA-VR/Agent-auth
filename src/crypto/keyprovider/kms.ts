@@ -116,8 +116,12 @@ export class FakeKmsKeyProvider implements KeyProvider {
   }
 
   async unwrap(wrapped: WrappedKey): Promise<Buffer> {
-    const d = createDecipheriv('aes-256-gcm', this.key, Buffer.from(wrapped.iv, 'base64'));
-    d.setAuthTag(Buffer.from(wrapped.tag, 'base64'));
+    const iv = Buffer.from(wrapped.iv, 'base64');
+    const tag = Buffer.from(wrapped.tag, 'base64');
+    if (iv.length !== 12) throw new Error('invalid IV length');
+    if (tag.length !== 16) throw new Error('invalid auth tag length');
+    const d = createDecipheriv('aes-256-gcm', this.key, iv);
+    d.setAuthTag(tag);
     return Buffer.concat([d.update(Buffer.from(wrapped.ciphertext, 'base64')), d.final()]);
   }
 }
