@@ -43,7 +43,10 @@ export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
     ...(https ? { https } : {}),
     bodyLimit: env.BODY_LIMIT_BYTES,
-    trustProxy: env.isProd,
+    // Only trust X-Forwarded-For when explicitly configured (TRUST_PROXY) — blanket
+    // trusting all hops lets a direct client spoof req.ip, defeating per-IP rate
+    // limiting and forging audit actor IPs. Default false (use the socket peer).
+    trustProxy: env.trustProxy,
     // Route a trailing/doubled slash to the real handler instead of falling into
     // the not-found path (which otherwise answered a slash variant with a
     // self-contradictory 405). The not-found handler also excludes the request's

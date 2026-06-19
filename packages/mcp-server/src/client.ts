@@ -264,8 +264,8 @@ export class AgentAuthClient {
    * (by listing order) wins.
    */
   private async resolveTarget(target: string): Promise<string> {
-    // Hosts are case-insensitive; the server stores targets lowercased.
-    const want = target.toLowerCase();
+    // Match the server's deposit canonicalization (trim + drop trailing dots + lowercase).
+    const want = target.trim().replace(/\.+$/, '').toLowerCase();
     let offset = 0;
     for (;;) {
       const page = await this.listCredentials({ limit: MAX_PAGE_SIZE, offset });

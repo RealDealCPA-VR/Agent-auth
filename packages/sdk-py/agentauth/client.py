@@ -513,8 +513,8 @@ class AgentAuthClient(_BaseClient):
         Pages through the agent's credential listing. Most agents are scoped to
         a handful of targets, so this is cheap in practice.
         """
-        # Hosts are case-insensitive; the server stores targets lowercased.
-        want = target.lower()
+        # Match the server's deposit canonicalization (trim + drop trailing dots + lowercase).
+        want = target.strip().rstrip(".").lower()
         offset = 0
         while True:
             page = self.list_credentials(limit=limit, offset=offset)

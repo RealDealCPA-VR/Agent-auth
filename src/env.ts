@@ -142,6 +142,13 @@ const schema = z
       .default('info'),
     PORT: z.coerce.number().int().positive().default(8080),
     HOST: z.string().default('0.0.0.0'),
+    // How much to trust X-Forwarded-For when deriving req.ip (rate-limit key +
+    // audit actor IP). Default OFF: only trust XFF when a known proxy is in front.
+    //   ''/false      -> ignore XFF, use the socket peer (secure default)
+    //   true          -> trust ALL hops (ONLY behind a trusted XFF-rewriting proxy)
+    //   <integer>     -> trust exactly N proxy hops
+    //   <cidr,list>   -> trust these proxy addresses/CIDRs
+    TRUST_PROXY: z.string().optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
   })
@@ -324,10 +331,23 @@ const schema = z
     isProd: e.NODE_ENV === 'production',
     // Effective SSL mode: explicit value wins, else require in prod / disable otherwise.
     sslMode: e.DATABASE_SSL ?? (e.NODE_ENV === 'production' ? 'require' : 'disable'),
+    // Fastify trustProxy value: false (default — ignore XFF), true, a hop count, or
+    // a CIDR/IP list. Secure-by-default so native-TLS prod (no proxy) can't be
+    // spoofed via X-Forwarded-For.
+    trustProxy: parseTrustProxy(e.TRUST_PROXY),
     corsOrigins: e.CORS_ORIGINS.split(',')
       .map((s) => s.trim())
       .filter(Boolean),
   }));
+
+function parseTrustProxy(v: string | undefined): boolean | number | string {
+  if (v === undefined) return false;
+  const t = v.trim();
+  if (t === '' || t.toLowerCase() === 'false') return false;
+  if (t.toLowerCase() === 'true') return true;
+  if (/^\d+$/.test(t)) return Number(t); // hop count
+  return t; // CIDR / IP list
+}
 
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {

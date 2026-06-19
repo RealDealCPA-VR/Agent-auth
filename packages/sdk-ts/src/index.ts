@@ -542,9 +542,9 @@ export class AgentAuthClient extends Transport {
    * credential shares the target, the first match (by listing order) wins.
    */
   private async resolveTarget(target: string): Promise<string> {
-    // Hosts are case-insensitive and the server stores targets lowercased, so
-    // normalize the caller's input before matching the (already-lowercase) listing.
-    const want = target.toLowerCase();
+    // Match the server's deposit canonicalization (trim + drop trailing dots +
+    // lowercase) so the same raw string accepted at deposit resolves here too.
+    const want = target.trim().replace(/\.+$/, '').toLowerCase();
     const pageSize = 200; // max the server allows — fewest round-trips.
     let offset = 0;
     for (;;) {

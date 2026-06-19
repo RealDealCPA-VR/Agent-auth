@@ -317,6 +317,8 @@ def test_use_credential_target_is_case_insensitive():
     out = client.use_credential("GitHub.COM")
     assert out["id"] == gh
     assert out["secret"] == "resolved"
+    # Trailing dot + whitespace are canonicalized the same way the server deposits.
+    assert client.use_credential("  github.com.  ")["id"] == gh
 
 
 def test_use_credential_target_not_found_raises_404():

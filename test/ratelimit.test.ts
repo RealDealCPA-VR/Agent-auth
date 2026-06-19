@@ -34,4 +34,18 @@ describe('rate limiting', () => {
     expect(last!.json().error.code).toBe('rate_limited');
     expect(last!.headers['retry-after']).toBeDefined();
   });
+
+  it('ignores a spoofed X-Forwarded-For (TRUST_PROXY off) — XFF cannot dodge the limit', async () => {
+    let last;
+    for (let i = 0; i < 5; i += 1) {
+      // A fresh forged XFF per request would land in a new bucket IF XFF were
+      // trusted; with TRUST_PROXY unset they all share the real socket peer.
+      last = await app.inject({
+        method: 'GET',
+        url: '/healthz',
+        headers: { 'x-forwarded-for': `9.9.9.${i}` },
+      });
+    }
+    expect(last!.statusCode).toBe(429);
+  });
 });
