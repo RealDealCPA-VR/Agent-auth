@@ -133,6 +133,13 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   }
 
   if (!res.ok) {
+    // An expired/revoked session on an authenticated call: clear the stale token
+    // and bounce to login so the user isn't stuck on a protected page showing a
+    // perpetual "unauthorized" banner (RequireAuth only checks token presence).
+    if (res.status === 401 && auth && typeof window !== 'undefined') {
+      clearToken();
+      if (window.location.pathname !== '/login') window.location.assign('/login');
+    }
     const envelope = (parsed as { error?: Record<string, unknown> } | undefined)
       ?.error;
     throw new ApiError(

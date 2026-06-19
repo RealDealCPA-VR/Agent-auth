@@ -29,8 +29,8 @@ from agentauth import AgentAuthClient
 
 client = AgentAuthClient("https://api.agentauth.dev", "aa_uuid.secret")
 
-# Use a credential by id...
-cred = client.use_credential("cred_123")
+# Use a credential by id (a UUID)...
+cred = client.use_credential("22222222-2222-4222-8222-222222222222")
 
 # ...or by target host — resolved against the credentials this agent can see.
 cred = client.use_credential("github.com")

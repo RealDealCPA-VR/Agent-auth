@@ -10,6 +10,7 @@ import {
   issueAgent,
 } from './helpers.js';
 import { sql } from '../src/db/index.js';
+import { audit, verifyAuditChain } from '../src/lib/audit.js';
 
 let app: FastifyInstance;
 
@@ -145,6 +146,14 @@ describe('audit trail + tamper evidence', () => {
     // Only the boolean is exposed — no cross-tenant count/seq leak.
     expect(body.brokenAtSeq).toBeUndefined();
     expect(body.count).toBeUndefined();
+  });
+
+  it('an undefined-valued detail key does not falsely break the chain', async () => {
+    await runLifecycle();
+    // jsonb drops an undefined-valued key on store; the hash must omit it too, or
+    // verify would recompute a different hash and falsely report tampering.
+    await audit({ action: 'credential.use', success: true, detail: { reason: 'x', extra: undefined } });
+    expect((await verifyAuditChain()).ok).toBe(true);
   });
 
   it('detects tampering by reporting the broken sequence number', async () => {

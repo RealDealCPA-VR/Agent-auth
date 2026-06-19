@@ -105,6 +105,9 @@ export type UseResult =
       expiresAt: Date | null;
       injection: Injection | null;
       id: string;
+      // The single-use approval grant spent for this use (if any). The proxy path
+      // returns it so a post-charge downstream failure can release/refund it.
+      consumedGrantId: string | null;
     }
   | { status: 'not_found' }
   | { status: 'expired' }
@@ -230,6 +233,27 @@ export async function getCredentialTarget(
   return row ?? null;
 }
 
+/**
+ * Compensate a charged-but-undelivered use: restore a consumed single-use approval
+ * grant and give back the maxUses slot. Used by the proxy route when the downstream
+ * call fails AFTER useCredential charged (timeout / unreachable / connect-time
+ * block) — so a transient network failure never bricks a maxUses:1 credential or
+ * spends a human's one-shot approval. Best-effort; the decrement is floored at 0.
+ */
+export async function releaseUse(
+  passportId: string,
+  credentialId: string,
+  consumedGrantId: string | null,
+): Promise<void> {
+  if (consumedGrantId) await refundGrant(consumedGrantId);
+  await db
+    .update(schema.credentials)
+    .set({ useCount: sql`GREATEST(${schema.credentials.useCount} - 1, 0)` })
+    .where(
+      and(eq(schema.credentials.id, credentialId), eq(schema.credentials.passportId, passportId)),
+    );
+}
+
 export async function useCredential(
   passportId: string,
   credentialId: string,
@@ -331,6 +355,7 @@ export async function useCredential(
       expiresAt: cred.expiresAt,
       injection: (cred.injection ?? null) as Injection | null,
       secret,
+      consumedGrantId,
     };
   } catch {
     // Tampering, wrong key, or corruption — never surface crypto internals.

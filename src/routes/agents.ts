@@ -9,6 +9,9 @@ import { fingerprintFromPem, normalizeFingerprint } from '../auth/mtls.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
+// agent ids are Postgres uuid; a non-uuid would make the driver throw 22P02 (500).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const issueSchema = z.object({
   passportId: z.string().uuid(),
   name: z.string().min(1).max(120),
@@ -163,6 +166,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     { schema: { tags: ['agents'], summary: 'Revoke an agent', security: [{ humanBearer: [] }] } },
     async (req, reply) => {
       const { id } = req.params as { id: string };
+      if (!UUID_RE.test(id)) return fail(req, reply, 404, 'not_found', 'agent not found');
       const [row] = await db
         .select({ id: schema.agents.id, passportId: schema.agents.passportId })
         .from(schema.agents)
@@ -208,6 +212,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const { id } = req.params as { id: string };
+      if (!UUID_RE.test(id)) return fail(req, reply, 404, 'not_found', 'agent not found');
       const parsed = mtlsBindSchema.safeParse(req.body);
       if (!parsed.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid body', parsed.error.flatten());

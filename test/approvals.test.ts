@@ -113,6 +113,15 @@ describe('approval workflow', () => {
     expect(blocked.json().error.code).toBe('approval_denied');
   });
 
+  it('returns 404 (not 500) for a non-UUID approval id', async () => {
+    const { token } = await registerAndLogin(app);
+    const a = await decide(token, 'not-a-uuid', 'approve');
+    expect(a.statusCode).toBe(404);
+    expect(a.json().error.code).toBe('not_found');
+    const d = await decide(token, 'not-a-uuid', 'deny');
+    expect(d.statusCode).toBe(404);
+  });
+
   it('rejects cross-tenant approve/deny with 404', async () => {
     const { credId, apiKey } = await setup();
     const first = await use(apiKey, credId);

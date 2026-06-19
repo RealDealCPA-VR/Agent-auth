@@ -35,7 +35,11 @@ export async function resetDb(): Promise<void> {
       await sql.begin(async (tx) => {
         await tx`SET LOCAL lock_timeout = '8s'`;
         await tx`SELECT pg_advisory_xact_lock(${AUDIT_LOCK})`;
+        // audit_events now has a BEFORE TRUNCATE guard (append-only); disable it
+        // just for the test reset (we own the table here), then restore it.
+        await tx`ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_truncate`;
         await tx`TRUNCATE principals, passports, credentials, agents, approval_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
+        await tx`ALTER TABLE audit_events ENABLE TRIGGER audit_events_no_truncate`;
       });
       return;
     } catch (err) {

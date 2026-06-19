@@ -10,6 +10,10 @@ import { env } from '../env.js';
 
 const TTL_MS = env.APPROVAL_TTL_SECONDS * 1000;
 
+// :id route params are Postgres uuid columns; a non-uuid would make the driver
+// throw 22P02 and surface as a 500. Guard so a malformed id is a clean not-found.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function ttlFromNow(now: number): Date {
   return new Date(now + TTL_MS);
 }
@@ -157,6 +161,7 @@ export async function approve(
   requestId: string,
   principalId: string,
 ): Promise<ApprovalRequestRow | null> {
+  if (!UUID_RE.test(requestId)) return null;
   const now = Date.now();
   // Correlated subquery: passed to inArray() below to produce `passport_id IN
   // (SELECT id FROM passports WHERE principal_id = ?)`. Drizzle supports a query
@@ -190,6 +195,7 @@ export async function deny(
   requestId: string,
   principalId: string,
 ): Promise<ApprovalRequestRow | null> {
+  if (!UUID_RE.test(requestId)) return null;
   const owned = db
     .select({ id: schema.passports.id })
     .from(schema.passports)

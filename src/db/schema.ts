@@ -239,7 +239,10 @@ export const auditAction = pgEnum('audit_action', [
  * HMAC-keyed), so deletion or modification of any row breaks the chain. Stores
  * who/what/when and an outcome, never the secret itself. Reference columns are
  * intentionally NOT foreign keys, so audit rows survive deletion of the entities
- * they describe. A DB trigger blocks UPDATE/DELETE (see migrate.ts).
+ * they describe. DB triggers block UPDATE/DELETE/TRUNCATE on the normal SQL path
+ * (see migrate.ts) — preventive only against a role that can't disable triggers,
+ * so run the runtime as a least-privilege non-owner role; the HMAC chain is the
+ * detective backstop.
  */
 export const auditEvents = pgTable(
   'audit_events',

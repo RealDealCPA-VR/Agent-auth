@@ -53,6 +53,7 @@ pnpm test        # vitest run (api-client unit tests)
 | `/passports`      | List and create passports.                                    |
 | `/passports/[id]` | Deposit a credential and list a passport's credentials.       |
 | `/agents`         | Issue an agent (shows the API key once), list, and revoke.    |
+| `/approvals`      | Review and approve/deny pending credential-use requests.      |
 | `/audit`          | Browse the audit log and verify hash-chain integrity.         |
 
 ## Architecture
@@ -70,7 +71,9 @@ web/
     login/page.tsx
     passports/page.tsx
     passports/[id]/page.tsx
+    passports/[id]/OAuthConnect.tsx   connect an OAuth credential
     agents/page.tsx
+    approvals/page.tsx
     audit/page.tsx
   lib/
     api.ts              typed API client + token storage + error mapping
@@ -84,6 +87,7 @@ web/
   server-side session; this is an admin tool, not a public site.
 - **Agent keys are never stored.** The issue response's `apiKey` is rendered in
   a one-time reveal box with a copy button and is dropped from state on dismiss.
-- **Audit payloads are open-ended.** The audit table tolerates varying event
-  field names (`action`/`type`, `actor`/`actorId`, `createdAt`/`timestamp`) so
-  it keeps working as the audit schema evolves.
+- **Audit payloads are open-ended.** The audit table derives the actor from
+  `principalId`/`agentId`, the target from `detail.target`/`credentialId`, and the
+  time from `createdAt`/`timestamp`/`at`, tolerating shape variation so it keeps
+  working as the audit schema evolves.

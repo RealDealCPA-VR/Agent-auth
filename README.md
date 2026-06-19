@@ -76,8 +76,10 @@ There is no "fail open" path. We tested it: pull the database, access stops.
 ### 🧾 A tamper-evident audit trail
 
 Every issue, deposit, use, revoke, and denial is appended to an **HMAC hash-chained**
-log. Change one row and the chain breaks — detectably. The table is **append-only at
-the database level** (a trigger blocks `UPDATE`/`DELETE`). Secrets never touch the log.
+log. Change one row and the chain breaks — detectably. Triggers block
+`UPDATE`/`DELETE`/`TRUNCATE` on the table via the normal SQL path (run the runtime
+under a least-privilege DB role so it can't disable them — see
+[SECURITY.md](./SECURITY.md)). Secrets never touch the log.
 
 ### 🎯 Least authority by default
 
@@ -219,7 +221,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 155 tests, all green
+## 🧪 Tested like a vault — 159 tests, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.
@@ -255,7 +257,7 @@ single request.
 
 ## 🧩 Ecosystem
 
-- **MCP server** — [`packages/mcp-server`](./packages/mcp-server): drop-in Model Context Protocol server exposing `list_credentials` + `use_credential` tools. Point any MCP-capable agent (Claude Desktop, etc.) at it with `AGENTAUTH_API_KEY` and your agents get the vault as tools — **zero code**.
+- **MCP server** — [`packages/mcp-server`](./packages/mcp-server): drop-in Model Context Protocol server exposing `list_credentials`, `use_credential`, and `proxy_request` (secret-free proxy mode) tools. Point any MCP-capable agent (Claude Desktop, etc.) at it with `AGENTAUTH_API_KEY` and your agents get the vault as tools — **zero code**.
 - **TypeScript SDK** — [`packages/sdk-ts`](./packages/sdk-ts): `new AgentAuthClient({ baseUrl, apiKey })` then `await client.useCredential('github.com')`. Plus a `HumanClient` for the management API.
 - **Python SDK** — [`packages/sdk-py`](./packages/sdk-py): the same surface (`AgentAuthClient`, `HumanClient`) over `httpx`.
 - **Admin web UI** — [`web/`](./web): a Next.js console for login, passports, credential deposit, agent issuance/revocation, the approvals queue, OAuth connect, and the audit trail.

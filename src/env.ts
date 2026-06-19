@@ -52,6 +52,9 @@ const schema = z
     OAUTH_REDIRECT_BASE: z.string().url().optional(),
     // How long an in-flight authorization (PKCE/state) row stays valid.
     OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+    // Timeout for OAuth token-endpoint calls (exchange/refresh). Bounds how long a
+    // slow/hung provider can pin a DB connection + advisory lock during refresh.
+    OAUTH_TOKEN_TIMEOUT_MS: z.coerce.number().int().positive().max(120000).default(15000),
 
     // Key provider for the KEK layer that wraps per-passport data keys.
     //   local — wrap with MASTER_KEY in-process (default)

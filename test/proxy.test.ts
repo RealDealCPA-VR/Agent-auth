@@ -20,6 +20,8 @@ let port = 0;
 let app: FastifyInstance;
 let h: typeof import('./helpers.js');
 let proxyRequest: ProxyRequestFn;
+let dbSql: typeof import('../src/db/index.js').sql;
+let closedPort = 0; // a port that is bound then closed → connections are refused
 const saved = process.env.PROXY_ALLOW_PRIVATE;
 
 beforeAll(async () => {
@@ -66,7 +68,13 @@ beforeAll(async () => {
   port = (server.address() as AddressInfo).port;
   h = await import('./helpers.js');
   proxyRequest = (await import('../src/lib/proxy.js')).proxyRequest;
+  dbSql = (await import('../src/db/index.js')).sql;
   app = await h.makeApp();
+  // Bind then immediately close a port so connections to it are refused.
+  const tmp = http.createServer();
+  await new Promise<void>((r) => tmp.listen(0, '127.0.0.1', r));
+  closedPort = (tmp.address() as AddressInfo).port;
+  await new Promise<void>((r) => tmp.close(() => r()));
 });
 
 afterAll(async () => {
@@ -286,6 +294,49 @@ describe('proxy mode', () => {
     });
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.reason).toBe('bad_request');
+  });
+
+  it('refunds the maxUses slot when the downstream proxy call fails (unreachable)', async () => {
+    const { token, pp, apiKey } = await setup();
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${closedPort}`,
+      label: 'down',
+      type: 'api_key',
+      secret: SECRET,
+      maxUses: 1,
+    });
+    const res = await proxy(apiKey, cred.id, { method: 'GET', path: '/x' });
+    expect([502, 504]).toContain(res.statusCode);
+    // The use was charged then released — the slot is intact.
+    const rows = await dbSql.unsafe<{ use_count: number }[]>(
+      `SELECT use_count FROM credentials WHERE id = '${cred.id}'`,
+    );
+    expect(Number(rows[0]?.use_count ?? -1)).toBe(0);
+  });
+
+  it('refunds the approval grant when the downstream proxy call fails (no re-approval)', async () => {
+    const { token, pp, apiKey } = await setup();
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${closedPort}`,
+      label: 'down2',
+      type: 'api_key',
+      secret: SECRET,
+      requireApproval: true,
+    });
+    // First proxy -> 202 pending; the human approves.
+    const pending = await proxy(apiKey, cred.id, { method: 'GET', path: '/x' });
+    expect(pending.statusCode).toBe(202);
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/v1/approvals/${pending.json().requestId}/approve`,
+      headers: h.auth(token),
+    });
+    expect(approved.statusCode).toBe(200);
+    // Grant consumed, downstream unreachable -> 502; the grant is refunded.
+    expect([502, 504]).toContain((await proxy(apiKey, cred.id, { method: 'GET', path: '/x' })).statusCode);
+    // Because it was refunded, a retry still has a LIVE grant — it attempts delivery
+    // again (502), it does NOT fall back to 202 pending (which would mean re-approval).
+    expect([502, 504]).toContain((await proxy(apiKey, cred.id, { method: 'GET', path: '/x' })).statusCode);
   });
 
   it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {

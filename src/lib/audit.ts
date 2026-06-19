@@ -105,12 +105,19 @@ const AUDIT_LOCK = 4242421;
  * Deterministic serializer with recursively sorted object keys. Required because
  * Postgres `jsonb` does not preserve key order, so a plain JSON.stringify would
  * hash differently at insert vs verify time for multi-key `detail` objects.
+ *
+ * Keys whose value is `undefined` are OMITTED — jsonb drops them on store (via
+ * JSON.stringify), so including them at insert time would make verify (which reads
+ * the stored jsonb back without the key) recompute a different hash and falsely
+ * report the chain as tampered.
  */
 function stableStringify(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
   if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
   const obj = v as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
 }
 

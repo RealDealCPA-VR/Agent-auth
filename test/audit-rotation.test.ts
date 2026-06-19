@@ -45,7 +45,10 @@ describe('audit chain survives MASTER_KEY rotation (derived mode)', () => {
   it('rows signed under the old master still verify after rotation; break only if it is not retired', async () => {
     // Boot 1: master k1, clean the table, write a couple of rows.
     const b1 = await boot({ MASTER_KEY: K1, MASTER_KEY_ID: 'k1', MASTER_KEYS_RETIRED: undefined, ...DERIVED });
+    // audit_events has a BEFORE TRUNCATE append-only guard; disable it for the reset.
+    await b1.dbMod.sql.unsafe('ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_truncate');
     await b1.dbMod.sql.unsafe('TRUNCATE audit_events RESTART IDENTITY CASCADE');
+    await b1.dbMod.sql.unsafe('ALTER TABLE audit_events ENABLE TRIGGER audit_events_no_truncate');
     await b1.auditMod.audit({ action: 'principal.register', success: true });
     await b1.auditMod.audit({ action: 'agent.issue', success: true });
     const rows = await b1.dbMod.sql.unsafe<{ n: number }[]>(

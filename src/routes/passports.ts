@@ -7,12 +7,19 @@ import { createPassport, depositCredential } from '../lib/vault.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
+// passport ids are Postgres uuid; a non-uuid would make the driver throw 22P02 (500).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Confirm the authenticated human owns this passport, else 404 (no existence leak). */
 async function ownsPassport(
   req: FastifyRequest,
   reply: FastifyReply,
   passportId: string,
 ): Promise<boolean> {
+  if (!UUID_RE.test(passportId)) {
+    await fail(req, reply, 404, 'not_found', 'passport not found');
+    return false;
+  }
   const [p] = await db
     .select({ id: schema.passports.id })
     .from(schema.passports)

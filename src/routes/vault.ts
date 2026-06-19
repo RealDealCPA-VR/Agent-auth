@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
 import { hasScope, allowsTarget } from '../auth/agent.js';
-import { useCredential, getCredentialTarget } from '../lib/vault.js';
+import { useCredential, getCredentialTarget, releaseUse } from '../lib/vault.js';
 import { proxyRequest, precheckProxyTarget } from '../lib/proxy.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
@@ -275,9 +275,9 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
 
       // Validate target-scope + the SSRF/path guards BEFORE charging a use, so a
       // proxy rejected by these pre-charge checks never burns a maxUses slot or
-      // spends an approval grant. (A connect-time block — e.g. a DNS rebind caught
-      // by the pinned lookup — can still occur after the charge; that is a rare,
-      // fail-closed backstop, not the common guard path.)
+      // spends an approval grant. A downstream failure AFTER the charge (timeout,
+      // unreachable, or a connect-time rebind block) is compensated via releaseUse
+      // below, so no rejected proxy ever permanently consumes a slot/grant.
       const meta = await getCredentialTarget(agent.passportId, id);
       if (!meta) return deny('not_found', 404, 'not_found', 'credential not found');
       if (!allowsTarget(agent.scopes, meta.target)) {
@@ -335,6 +335,10 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         request: parsed.data,
       });
       if (!outcome.ok) {
+        // The downstream call failed AFTER useCredential charged the use, so the
+        // secret was never delivered to the agent — give the slot / approval grant
+        // back (mirrors the /use invariant that a rejected call never burns one).
+        await releaseUse(agent.passportId, id, result.consumedGrantId);
         const status =
           outcome.reason === 'forbidden_target'
             ? 403

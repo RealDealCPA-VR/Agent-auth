@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { OAuthProvider } from './registry.js';
+import { env } from '../env.js';
 
 /**
  * OAuth token-exchange helpers: PKCE generation and the two token-endpoint calls
@@ -70,6 +71,7 @@ export async function exchangeCode(
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body,
+    signal: AbortSignal.timeout(env.OAUTH_TOKEN_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`token exchange failed: ${res.status}`);
   const json = (await res.json()) as TokenResponse;
@@ -89,6 +91,7 @@ export async function refreshToken(provider: OAuthProvider, current: TokenSet): 
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body,
+    signal: AbortSignal.timeout(env.OAUTH_TOKEN_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`token refresh failed: ${res.status}`);
   const json = (await res.json()) as TokenResponse;
