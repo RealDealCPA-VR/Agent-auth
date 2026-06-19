@@ -50,7 +50,23 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         return fail(req, reply, 400, 'invalid_request', 'invalid body', parsed.error.flatten());
       const { passportId, name, scopes, expiresAt } = parsed.data;
 
-      // Reject unknown/over-broad scopes (e.g. "admin:*") before anything else.
+      // Verify passport ownership FIRST — before any audit row references the
+      // body-supplied passportId. Auditing a denial with an unvalidated passportId
+      // would let a caller inject authz.denied rows (with attacker-controlled
+      // detail) into another tenant's audit view via that passport id.
+      const [owned] = await db
+        .select({ id: schema.passports.id })
+        .from(schema.passports)
+        .where(
+          and(
+            eq(schema.passports.id, passportId),
+            eq(schema.passports.principalId, req.human!.sub),
+          ),
+        )
+        .limit(1);
+      if (!owned) return fail(req, reply, 404, 'not_found', 'passport not found');
+
+      // Reject unknown/over-broad scopes (e.g. "admin:*").
       const invalid = scopes.filter((s) => !isValidScope(s));
       if (invalid.length > 0) {
         await audit({
@@ -69,18 +85,6 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       const normScopes = scopes.map((s) =>
         s.startsWith('target:') ? `target:${s.slice('target:'.length).toLowerCase()}` : s,
       );
-
-      const [owned] = await db
-        .select({ id: schema.passports.id })
-        .from(schema.passports)
-        .where(
-          and(
-            eq(schema.passports.id, passportId),
-            eq(schema.passports.principalId, req.human!.sub),
-          ),
-        )
-        .limit(1);
-      if (!owned) return fail(req, reply, 404, 'not_found', 'passport not found');
 
       const secret = generateKeySecret();
       const [row] = await db

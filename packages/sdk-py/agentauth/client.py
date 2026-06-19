@@ -34,6 +34,27 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 
+_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _target_host(target: str) -> str:
+    """Reduce a target to its bare host, mirroring the server's targetHost (strip
+    scheme/path/port/IPv6-brackets/trailing-dot, lowercase). The server authorizes
+    and lists by host, so by-target resolution must compare hosts."""
+    h = _SCHEME_RE.sub("", target.strip())
+    slash = h.find("/")
+    if slash >= 0:
+        h = h[:slash]
+    if h.startswith("["):
+        end = h.find("]")
+        if end >= 0:
+            h = h[1:end]
+    else:
+        colon = h.find(":")
+        if colon >= 0:
+            h = h[:colon]
+    return h.rstrip(".").lower()
+
 # Default per-request timeout (seconds). The vault deliberately fails closed and
 # can return 503 quickly, so a modest default is fine; callers may override.
 _DEFAULT_TIMEOUT = 30.0
@@ -513,14 +534,14 @@ class AgentAuthClient(_BaseClient):
         Pages through the agent's credential listing. Most agents are scoped to
         a handful of targets, so this is cheap in practice.
         """
-        # Match the server's deposit canonicalization (trim + drop trailing dots + lowercase).
-        want = target.strip().rstrip(".").lower()
+        # Match on bare host (like the server's allowsTarget), so URL/host:port targets resolve.
+        want = _target_host(target)
         offset = 0
         while True:
             page = self.list_credentials(limit=limit, offset=offset)
             items: List[JSON] = page.get("items", [])
             for item in items:
-                if str(item.get("target", "")).lower() == want:
+                if _target_host(str(item.get("target", ""))) == want:
                     return item.get("id")
             pagination = page.get("pagination", {})
             returned = pagination.get("returned", len(items))

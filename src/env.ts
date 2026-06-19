@@ -314,6 +314,17 @@ const schema = z
         message: 'native mTLS (MTLS_ENABLED, not MTLS_TRUSTED_PROXY) requires MTLS_CA',
       });
     }
+    // Native mTLS only works when the server terminates TLS itself (it reads the
+    // client cert off the TLS socket). Without HTTPS_CERT/HTTPS_KEY the server runs
+    // plain HTTP and cert auth is silently inert — fail fast instead.
+    if (e.MTLS_ENABLED && !e.MTLS_TRUSTED_PROXY && !(e.HTTPS_CERT && e.HTTPS_KEY)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['HTTPS_CERT'],
+        message:
+          'native mTLS requires native TLS termination — set HTTPS_CERT and HTTPS_KEY, or use MTLS_TRUSTED_PROXY',
+      });
+    }
     if (e.MTLS_CA) {
       try {
         accessSync(e.MTLS_CA, constants.R_OK);

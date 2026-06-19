@@ -209,9 +209,8 @@ export const oauthFlows = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   },
-  (t) => ({
-    byState: index('oauth_flows_state_idx').on(t.state),
-  }),
+  // `state` is already UNIQUE (its own btree index serves the equality lookup), so
+  // no extra index is needed.
 );
 
 export const auditAction = pgEnum('audit_action', [
@@ -265,7 +264,7 @@ export const auditEvents = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    bySeq: index('audit_seq_idx').on(t.seq),
+    // `seq` is already UNIQUE (its btree serves ordered scans + lookups) — no extra index.
     byCreated: index('audit_created_idx').on(t.createdAt),
     byPassport: index('audit_passport_idx').on(t.passportId),
     byPrincipal: index('audit_principal_idx').on(t.principalId),

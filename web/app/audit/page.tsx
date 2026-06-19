@@ -19,18 +19,23 @@ function field(ev: AuditEvent, ...keys: string[]): string {
 }
 
 function AuditView() {
+  const PAGE = 100;
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
 
   const [verify, setVerify] = useState<AuditVerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
 
-  const load = useCallback(async () => {
+  // Offset-based paging: load(0) replaces; load(events.length) appends the next
+  // page, so the full audit history is reachable, not just the newest 100.
+  const load = useCallback(async (offset = 0) => {
     setError(null);
     try {
-      const page = await api.listAudit(100, 0);
-      setEvents(page.items);
+      const page = await api.listAudit(PAGE, offset);
+      setEvents((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+      setTotal(page.pagination?.total ?? 0);
     } catch (err) {
       setError(err);
     } finally {
@@ -128,6 +133,14 @@ function AuditView() {
               })}
             </tbody>
           </table>
+        )}
+        {!loading && events.length < total && (
+          <div className="flex-between" style={{ marginTop: '0.75rem' }}>
+            <span className="muted">
+              Showing {events.length} of {total}
+            </span>
+            <button onClick={() => load(events.length)}>Load more</button>
+          </div>
         )}
       </div>
     </>

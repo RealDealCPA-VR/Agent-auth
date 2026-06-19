@@ -87,6 +87,25 @@ describe('agents (human-authenticated issuance / listing / revocation)', () => {
     expect(res.json().error.code).toBe('not_found');
   });
 
+  it('does NOT inject an authz.denied row into another tenant via passportId', async () => {
+    const owner = await registerAndLogin(app);
+    const passportId = await createPassport(app, owner.token);
+    const stranger = await registerAndLogin(app);
+    // Stranger submits the OWNER's passport with INVALID scopes. Ownership must be
+    // rejected (404) BEFORE the invalid-scope audit, so no forged authz.denied row
+    // lands in the owner's audit trail.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/agents',
+      headers: auth(stranger.token),
+      payload: { passportId, name: 'x', scopes: ['admin:*'] },
+    });
+    expect(res.statusCode).toBe(404);
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(owner.token) });
+    const actions = (trail.json().items as Array<{ action: string }>).map((i) => i.action);
+    expect(actions).not.toContain('authz.denied');
+  });
+
   it('accepts valid target globs: exact host, full wildcard, and suffix wildcard', async () => {
     const { token } = await registerAndLogin(app);
     const passportId = await createPassport(app, token);

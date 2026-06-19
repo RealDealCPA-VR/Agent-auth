@@ -321,6 +321,24 @@ def test_use_credential_target_is_case_insensitive():
     assert client.use_credential("  github.com.  ")["id"] == gh
 
 
+def test_use_credential_target_matches_by_host():
+    """A bare host resolves a URL-form stored target (server lists/authorizes by host)."""
+    cid = "33333333-3333-4333-8333-333333333333"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/vault/credentials":
+            return ok({
+                "items": [{"id": cid, "target": "https://api.github.com/v1"}],
+                "pagination": {"limit": 100, "offset": 0, "total": 1, "returned": 1},
+            })
+        if request.url.path == f"/v1/vault/credentials/{cid}/use":
+            return ok({"id": cid, "secret": "resolved"})
+        raise AssertionError(request.url.path)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    assert client.use_credential("api.github.com")["id"] == cid
+
+
 def test_use_credential_target_not_found_raises_404():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/use"):

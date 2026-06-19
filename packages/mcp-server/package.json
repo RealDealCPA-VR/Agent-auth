@@ -1,7 +1,7 @@
 {
   "name": "@agentauth/mcp-server",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) server for AgentAuth — exposes your agent credential vault as MCP tools (list_credentials + use_credential) so any MCP-capable agent (Claude Desktop, etc.) can fetch credentials with zero code.",
+  "description": "Model Context Protocol (MCP) server for AgentAuth — exposes your agent credential vault as MCP tools (list_credentials, use_credential, proxy_request) so any MCP-capable agent (Claude Desktop, etc.) can fetch or proxy through credentials with zero code.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

@@ -308,6 +308,37 @@ describe('AgentAuthClient.useCredential by target', () => {
     expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/use`);
   });
 
+  it('resolves a bare host against a URL-form stored target (host-reduced match)', async () => {
+    const list: Page<VaultCredential> = {
+      items: [
+        {
+          id: 'cB',
+          target: 'https://api.github.com/v1',
+          label: 'GH',
+          type: 'api_key',
+          metadata: {},
+          expiresAt: null,
+        },
+      ],
+      pagination: { limit: 200, offset: 0, total: 1, returned: 1 },
+    };
+    const used: UsedCredential = {
+      id: 'cB',
+      target: 'https://api.github.com/v1',
+      label: 'GH',
+      type: 'api_key',
+      metadata: {},
+      expiresAt: null,
+      secret: 'ghp_resolved',
+    };
+    const { calls } = stubFetch([{ body: list }, { body: used }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    // The server authorizes/lists this credential by host, so the bare host resolves.
+    const result = await aa.useCredential('api.github.com');
+    expect(result.secret).toBe('ghp_resolved');
+    expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/use`);
+  });
+
   it('pages through the listing until it finds a match on a later page', async () => {
     const pageOne: Page<VaultCredential> = {
       items: [

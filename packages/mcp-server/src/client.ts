@@ -143,6 +143,23 @@ function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+/** Reduce a target to its bare host (mirrors the server's targetHost). */
+function targetHost(target: string): string {
+  let h = target.trim();
+  const scheme = h.match(/^https?:\/\//i);
+  if (scheme) h = h.slice(scheme[0].length);
+  const slash = h.indexOf('/');
+  if (slash >= 0) h = h.slice(0, slash);
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    if (end >= 0) h = h.slice(1, end);
+  } else {
+    const colon = h.indexOf(':');
+    if (colon >= 0) h = h.slice(0, colon);
+  }
+  return h.replace(/\.$/, '').toLowerCase();
+}
+
 /** Options for {@link AgentAuthClient}. */
 export interface AgentAuthClientOptions {
   /** Base URL of the AgentAuth API, e.g. `http://localhost:8080`. */
@@ -264,12 +281,12 @@ export class AgentAuthClient {
    * (by listing order) wins.
    */
   private async resolveTarget(target: string): Promise<string> {
-    // Match the server's deposit canonicalization (trim + drop trailing dots + lowercase).
-    const want = target.trim().replace(/\.+$/, '').toLowerCase();
+    // Match on bare host (like the server's allowsTarget), so URL/host:port targets resolve.
+    const want = targetHost(target);
     let offset = 0;
     for (;;) {
       const page = await this.listCredentials({ limit: MAX_PAGE_SIZE, offset });
-      const match = page.items.find((c) => c.target.toLowerCase() === want);
+      const match = page.items.find((c) => targetHost(c.target) === want);
       if (match) return match.id;
 
       offset += page.items.length;

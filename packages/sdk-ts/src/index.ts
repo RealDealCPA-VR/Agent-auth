@@ -278,6 +278,29 @@ function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+/**
+ * Reduce a target to its bare host the same way the server does (targetHost in
+ * src/auth/agent.ts) — strip an http(s):// scheme, the path, the port (or IPv6
+ * brackets), a trailing dot, and lowercase. The server authorizes and lists by
+ * host, so resolving a credential by host must compare hosts, not the raw stored
+ * string (a URL-form credential stays usable by its bare host).
+ */
+function targetHost(target: string): string {
+  let h = target.trim();
+  const scheme = h.match(/^https?:\/\//i);
+  if (scheme) h = h.slice(scheme[0].length);
+  const slash = h.indexOf('/');
+  if (slash >= 0) h = h.slice(0, slash);
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    if (end >= 0) h = h.slice(1, end);
+  } else {
+    const colon = h.indexOf(':');
+    if (colon >= 0) h = h.slice(0, colon);
+  }
+  return h.replace(/\.$/, '').toLowerCase();
+}
+
 interface RequestArgs {
   method: 'GET' | 'POST';
   path: string;
@@ -542,14 +565,14 @@ export class AgentAuthClient extends Transport {
    * credential shares the target, the first match (by listing order) wins.
    */
   private async resolveTarget(target: string): Promise<string> {
-    // Match the server's deposit canonicalization (trim + drop trailing dots +
-    // lowercase) so the same raw string accepted at deposit resolves here too.
-    const want = target.trim().replace(/\.+$/, '').toLowerCase();
+    // Match on bare host (like the server's allowsTarget), so a URL- or host:port-
+    // form credential resolves by its host too — not just the exact stored string.
+    const want = targetHost(target);
     const pageSize = 200; // max the server allows — fewest round-trips.
     let offset = 0;
     for (;;) {
       const pageResult = await this.listCredentials({ limit: pageSize, offset });
-      const match = pageResult.items.find((c) => c.target.toLowerCase() === want);
+      const match = pageResult.items.find((c) => targetHost(c.target) === want);
       if (match) return match.id;
 
       offset += pageResult.items.length;

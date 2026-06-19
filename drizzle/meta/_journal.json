@@ -15,6 +15,13 @@
       "when": 1781824250304,
       "tag": "0001_familiar_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781835940539,
+      "tag": "0002_goofy_sleeper",
+      "breakpoints": true
     }
   ]
 }
