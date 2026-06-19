@@ -212,6 +212,32 @@ describe('OAuth credential capture', () => {
     expect(secret).not.toBe(before); // a fresh access token was minted
   });
 
+  it('an exhausted maxUses oauth use returns 429 WITHOUT triggering a provider refresh', async () => {
+    const { token, cbRes } = await captureCredential();
+    const credentialId = cbRes.json().credentialId;
+    const ppList = await app.inject({
+      method: 'GET',
+      url: '/v1/passports',
+      headers: helpers.auth(token),
+    });
+    const pp = ppList.json().items[0].id;
+    // Token looks expired (would normally refresh) AND the use cap is exhausted.
+    await expireStoredToken(pp, credentialId, 'api.mock.test');
+    await dbmod.sql.unsafe(
+      `UPDATE credentials SET max_uses = 1, use_count = 1 WHERE id = '${credentialId}'`,
+    );
+    const before = mock.lastAccessToken();
+    const agent = await helpers.issueAgent(app, token, pp, ['vault:use', 'target:api.mock.test']);
+    const useRes = await app.inject({
+      method: 'POST',
+      url: `/v1/vault/credentials/${credentialId}/use`,
+      headers: helpers.auth(agent.apiKey),
+    });
+    expect(useRes.statusCode).toBe(429);
+    // The maxUses gate fired BEFORE any refresh — the provider was never contacted.
+    expect(mock.lastAccessToken()).toBe(before);
+  });
+
   it('rejects an invalid / expired state with 400', async () => {
     const res = await app.inject({
       method: 'GET',

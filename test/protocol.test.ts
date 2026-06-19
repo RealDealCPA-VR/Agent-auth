@@ -20,6 +20,27 @@ describe('HTTP / protocol concerns', () => {
     expect(res.json()).toEqual({ status: 'ok' });
   });
 
+  it('an unsupported content-type body is capped by bodyLimit (413, not unbounded read)', async () => {
+    const big = 'x'.repeat(80 * 1024); // > BODY_LIMIT_BYTES (64 KiB)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: big,
+    });
+    expect(res.statusCode).toBe(413);
+  });
+
+  it('a small unsupported content-type body is a clean 415', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: 'hello',
+    });
+    expect(res.statusCode).toBe(415);
+  });
+
   it('a malformed x-request-id header does not 500 (rejected, not echoed verbatim)', async () => {
     // A control char in x-request-id would throw ERR_INVALID_CHAR when echoed back,
     // bypassing the error envelope. genReqId must reject it and use a fresh uuid.

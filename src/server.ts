@@ -115,21 +115,19 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
   // Accept only an empty body for content-types we don't parse (e.g. body-less
-  // POSTs); a non-empty unsupported body is a clean 415, not a 500.
-  app.addContentTypeParser('*', (_req, payload, done) => {
-    let size = 0;
-    payload.on('data', (c: Buffer) => (size += c.length));
-    payload.on('end', () => {
-      if (size === 0) return done(null, undefined);
-      done(
-        Object.assign(new Error('unsupported content-type'), {
-          statusCode: 415,
-          code: 'unsupported_media_type',
-        }),
-        undefined,
-      );
-    });
-    payload.on('error', done);
+  // POSTs); a non-empty unsupported body is a clean 415. Register as a `buffer`
+  // parser so Fastify's rawBody enforces `bodyLimit` BEFORE reading the whole
+  // stream — a function-style parser would bypass the limit (unbounded read), so an
+  // over-limit unsupported body is a 413 (FST_ERR_CTP_BODY_TOO_LARGE), not a drain.
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body: Buffer, done) => {
+    if (body.length === 0) return done(null, undefined);
+    done(
+      Object.assign(new Error('unsupported content-type'), {
+        statusCode: 415,
+        code: 'unsupported_media_type',
+      }),
+      undefined,
+    );
   });
 
   // Consistent 404 + error envelope. MUST be registered before the route plugins

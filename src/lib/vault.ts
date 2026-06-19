@@ -293,12 +293,49 @@ export async function useCredential(
     consumedGrantId = decision.grantId;
   }
 
-  // Return a non-delivery status, first restoring a consumed approval grant so a
-  // rejected attempt never burns the human's one-shot approval.
+  // Return a non-delivery status, first compensating any charge already taken: give
+  // back a reserved maxUses slot and restore a consumed single-use approval grant,
+  // so a rejected attempt never burns either.
+  let reservedSlot = false;
   const undelivered = async (result: UseResult): Promise<UseResult> => {
+    if (reservedSlot) {
+      await db
+        .update(schema.credentials)
+        .set({ useCount: sql`GREATEST(${schema.credentials.useCount} - 1, 0)` })
+        .where(
+          and(eq(schema.credentials.id, credentialId), eq(schema.credentials.passportId, passportId)),
+        );
+    }
     if (consumedGrantId) await refundGrant(consumedGrantId);
     return result;
   };
+
+  // Reserve the use BEFORE unsealing/refreshing, so a policy-denied (use_limit)
+  // call does NO work behind the gate — in particular it never triggers a live
+  // OAuth provider refresh + row re-seal. Atomic, so concurrent calls can't exceed
+  // maxUses. A later decrypt/refresh failure refunds the slot via undelivered().
+  if (cred.maxUses !== null) {
+    const reserved = await db
+      .update(schema.credentials)
+      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+      .where(
+        and(
+          eq(schema.credentials.id, credentialId),
+          eq(schema.credentials.passportId, passportId),
+          sql`${schema.credentials.useCount} < ${schema.credentials.maxUses}`,
+        ),
+      )
+      .returning({ useCount: schema.credentials.useCount });
+    if (reserved.length === 0) return undelivered({ status: 'use_limit' });
+    reservedSlot = true;
+  } else {
+    // Track usage for unlimited credentials too (best-effort).
+    await db
+      .update(schema.credentials)
+      .set({ useCount: sql`${schema.credentials.useCount} + 1` })
+      .where(eq(schema.credentials.id, credentialId));
+    reservedSlot = true;
+  }
 
   const dek = await loadDek(passportId);
   if (!dek) return undelivered({ status: 'not_found' });
@@ -320,30 +357,6 @@ export async function useCredential(
       const access = await freshOauthAccessToken(passportId, cred, tokens, dek, aad);
       if (access === null) return undelivered({ status: 'refresh_failed' });
       secret = access;
-    }
-
-    // Reserve the use ONLY now that the secret is confirmed deliverable, so a
-    // decrypt/refresh failure above never burns a maxUses slot. Still atomic, so
-    // concurrent calls can't exceed maxUses.
-    if (cred.maxUses !== null) {
-      const reserved = await db
-        .update(schema.credentials)
-        .set({ useCount: sql`${schema.credentials.useCount} + 1` })
-        .where(
-          and(
-            eq(schema.credentials.id, credentialId),
-            eq(schema.credentials.passportId, passportId),
-            sql`${schema.credentials.useCount} < ${schema.credentials.maxUses}`,
-          ),
-        )
-        .returning({ useCount: schema.credentials.useCount });
-      if (reserved.length === 0) return undelivered({ status: 'use_limit' });
-    } else {
-      // Track usage for unlimited credentials too (best-effort).
-      await db
-        .update(schema.credentials)
-        .set({ useCount: sql`${schema.credentials.useCount} + 1` })
-        .where(eq(schema.credentials.id, credentialId));
     }
 
     return {

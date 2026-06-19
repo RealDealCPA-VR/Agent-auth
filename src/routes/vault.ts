@@ -291,7 +291,9 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       const pre = await precheckProxyTarget(meta.target, parsed.data.path ?? '/');
       if (pre) {
         const status = pre.reason === 'bad_request' ? 400 : 403;
-        const code = pre.reason === 'bad_request' ? 'invalid_request' : 'forbidden';
+        // Surface the specific reason as the machine code (e.g. 'forbidden_target')
+        // so a pre-charge SSRF rejection matches the connect-time path's code.
+        const code = pre.reason === 'bad_request' ? 'invalid_request' : pre.reason;
         return deny(pre.reason, status, code, pre.message);
       }
 
