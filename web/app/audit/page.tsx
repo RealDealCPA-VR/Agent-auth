@@ -90,7 +90,7 @@ function AuditView() {
           <table>
             <thead>
               <tr>
-                <th>Seq</th>
+                <th>Event</th>
                 <th>Action</th>
                 <th>Actor</th>
                 <th>Target</th>
@@ -109,9 +109,10 @@ function AuditView() {
                   typeof detail.target === 'string' && detail.target
                     ? detail.target
                     : field(ev, 'credentialId');
+                const idShort = field(ev, 'id').slice(0, 8);
                 return (
-                  <tr key={field(ev, 'id', 'seq') || i}>
-                    <td className="mono">{field(ev, 'seq') || '—'}</td>
+                  <tr key={field(ev, 'id') || i}>
+                    <td className="mono">{idShort || '—'}</td>
                     <td>
                       <span className="chip">
                         {field(ev, 'action', 'type', 'event') || 'event'}

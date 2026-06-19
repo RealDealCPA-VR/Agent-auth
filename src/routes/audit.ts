@@ -43,8 +43,12 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
         (tx) =>
           tx
             .select({
+              // NOTE: the global `seq` is intentionally NOT returned — it is a
+              // cross-tenant bigserial, so exposing it would let a tenant infer
+              // others' activity volume via gap analysis (the same reason
+              // /v1/audit/verify withholds count/brokenAtSeq). Order by it server-
+              // side, surface only the per-row `id` + `createdAt` to clients.
               id: schema.auditEvents.id,
-              seq: schema.auditEvents.seq,
               action: schema.auditEvents.action,
               success: schema.auditEvents.success,
               principalId: schema.auditEvents.principalId,

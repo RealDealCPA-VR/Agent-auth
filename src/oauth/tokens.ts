@@ -43,13 +43,20 @@ export function generateState(): string {
 }
 
 /** Map a token-endpoint response onto our sealed TokenSet, computing absolute expiry. */
-function toTokenSet(r: TokenResponse, now: number, prevRefresh: string | null): TokenSet {
+function toTokenSet(
+  r: TokenResponse,
+  now: number,
+  prevRefresh: string | null,
+  prevScope: string | null = null,
+): TokenSet {
   return {
     access_token: r.access_token!,
     // Providers often omit refresh_token on refresh; keep the prior one.
     refresh_token: r.refresh_token ?? prevRefresh,
     token_type: r.token_type ?? 'bearer',
-    scope: r.scope ?? null,
+    // RFC 6749 §5.1: an omitted `scope` on a refresh means "identical to the scope
+    // originally granted" — carry the prior scope forward instead of nulling it.
+    scope: r.scope ?? prevScope,
     expires_at: typeof r.expires_in === 'number' ? now + r.expires_in * 1000 : null,
   };
 }
@@ -96,7 +103,7 @@ export async function refreshToken(provider: OAuthProvider, current: TokenSet): 
   if (!res.ok) throw new Error(`token refresh failed: ${res.status}`);
   const json = (await res.json()) as TokenResponse;
   if (!json.access_token) throw new Error('token refresh returned no access_token');
-  return toTokenSet(json, Date.now(), current.refresh_token);
+  return toTokenSet(json, Date.now(), current.refresh_token, current.scope);
 }
 
 /** True if the access token is missing an expiry-in-future (expired / within skew). */

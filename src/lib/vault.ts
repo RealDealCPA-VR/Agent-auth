@@ -191,17 +191,18 @@ async function freshOauthAccessToken(
     }
 
     const reSealed = seal(dek, Buffer.from(JSON.stringify(updated), 'utf8'), aad);
+    const newMetadata = {
+      provider: provider.name,
+      scope: updated.scope,
+      tokenExpiresAt: updated.expires_at,
+    };
     await tx
       .update(schema.credentials)
-      .set({
-        sealed: reSealed,
-        metadata: {
-          provider: provider.name,
-          scope: updated.scope,
-          tokenExpiresAt: updated.expires_at,
-        },
-      })
+      .set({ sealed: reSealed, metadata: newMetadata })
       .where(eq(schema.credentials.id, cred.id));
+    // Reflect the refreshed expiry/scope in the in-memory row so the /use response
+    // returns metadata consistent with the (newly refreshed) access token.
+    cred.metadata = newMetadata;
     return updated.access_token;
   });
 }

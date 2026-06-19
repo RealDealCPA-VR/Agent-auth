@@ -87,9 +87,15 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_GLOBAL_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW,
-    // Rate-limit responses also use the standard error envelope.
-    errorResponseBuilder: (req, ctx) =>
-      errorBody(req, 'rate_limited', `too many requests, retry in ${ctx.after}`),
+    // @fastify/rate-limit THROWS whatever this returns and reads `statusCode` off
+    // it — a plain object would fall through to the 500 handler. Return an Error
+    // carrying the status (429, or 403 on ban) + code so the global error handler
+    // emits the standard `rate_limited` envelope with the right status.
+    errorResponseBuilder: (_req, ctx) =>
+      Object.assign(new Error(`too many requests, retry in ${ctx.after}`), {
+        statusCode: ctx.statusCode ?? 429,
+        code: 'rate_limited',
+      }),
   });
   await app.register(sensible);
 

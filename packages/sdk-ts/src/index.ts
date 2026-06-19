@@ -152,9 +152,9 @@ export interface AgentSummary {
  * as the affected target lives inside `detail`. */
 export interface AuditEvent {
   id: string;
-  seq: number;
   action: string;
   success: boolean;
+  principalId: string | null;
   passportId: string | null;
   agentId: string | null;
   credentialId: string | null;

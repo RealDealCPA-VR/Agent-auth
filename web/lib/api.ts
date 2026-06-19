@@ -226,7 +226,6 @@ export interface IssuedAgent {
 
 export interface AuditEvent {
   id?: string;
-  seq?: number;
   action?: string;
   success?: boolean;
   principalId?: string | null;
@@ -257,7 +256,9 @@ export interface ApprovalRequest {
   passportId: string;
   status: ApprovalStatus;
   createdAt: string;
-  decidedAt: string | null;
+  // Only present on approve/deny decision responses — the GET /v1/approvals list
+  // (pending-only) omits it.
+  decidedAt?: string | null;
   expiresAt: string | null;
 }
 

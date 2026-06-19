@@ -576,13 +576,26 @@ def test_context_manager_closes_client():
     assert client._http.is_closed
 
 
+def test_revoke_agent_returns_revoked_dict():
+    # The real server returns 200 {id, revoked: true} (src/routes/agents.ts), so the
+    # SDK surfaces that dict — it does NOT return None.
+    aid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return ok({"id": aid, "revoked": True})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    assert client.revoke_agent(aid) == {"id": aid, "revoked": True}
+
+
 def test_empty_body_success_returns_none():
+    # Defensive coverage of the SDK's empty-body branch. No current server endpoint
+    # returns 204/empty, so this guards only hypothetical/edge responses.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(204)
 
-    # revoke that returns 204 with no body should not blow up on .json()
     client = HumanClient(BASE, token="t", transport=make_transport(handler))
-    assert client.revoke_agent("a1") is None
+    assert client.list_passports() is None
 
 
 def test_use_credential_202_raises_approval_pending():

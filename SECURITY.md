@@ -4,9 +4,10 @@ AgentAuth is a credential vault. Security is the product, so we treat it that wa
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately to the maintainers (open a
-GitHub security advisory, or email the address in `package.json`). Do **not**
-open public issues for security reports. We aim to acknowledge within 72 hours.
+Please report suspected vulnerabilities privately to the maintainers by opening a
+[GitHub security advisory](https://github.com/RealDealCPA-VR/Agent-auth/security/advisories/new).
+Do **not** open public issues for security reports. We aim to acknowledge within
+72 hours.
 
 ## Design guarantees
 
