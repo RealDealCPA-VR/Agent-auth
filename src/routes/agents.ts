@@ -7,7 +7,7 @@ import { hashSecret, generateKeySecret, formatApiKey } from '../crypto/secrets.j
 import { isValidScope } from '../auth/agent.js';
 import { fingerprintFromPem, normalizeFingerprint } from '../auth/mtls.js';
 import { audit } from '../lib/audit.js';
-import { fail, paginationSchema, readPage } from '../lib/http.js';
+import { fail, paginationSchema, readPage, pgErrorCode } from '../lib/http.js';
 
 // agent ids are Postgres uuid; a non-uuid would make the driver throw 22P02 (500).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -272,7 +272,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
           );
         });
       } catch (err) {
-        if ((err as { code?: string }).code === '23505')
+        if (pgErrorCode(err) === '23505')
           return fail(req, reply, 409, 'conflict', 'fingerprint already bound to another agent');
         throw err;
       }

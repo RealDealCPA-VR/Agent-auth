@@ -56,6 +56,11 @@ export type ProxyOutcome =
       ok: false;
       reason: 'forbidden_target' | 'bad_request' | 'timeout' | 'upstream_unreachable';
       message: string;
+      // True once the socket connected — i.e. the secret-bearing request was (very
+      // likely) transmitted to the target. The caller must NOT refund a charged use
+      // when delivered=true: the use counts at-most-once against the target even if
+      // no usable response came back (a response-phase timeout / post-send RST).
+      delivered: boolean;
     };
 
 const HOP_BY_HOP = new Set([
@@ -330,8 +335,10 @@ type ProxyFailure = Extract<ProxyOutcome, { ok: false }>;
  * rare backstop that can fire after the charge.)
  */
 export async function precheckProxyTarget(target: string, path: string): Promise<ProxyFailure | null> {
+  // All precheck failures are pre-send (no request reaches the target), so a
+  // charged use is safe to refund (delivered: false).
   if (!path.startsWith('/'))
-    return { ok: false, reason: 'bad_request', message: 'path must start with /' };
+    return { ok: false, reason: 'bad_request', message: 'path must start with /', delivered: false };
 
   const { scheme: targetScheme, host } = parseTarget(target);
   const bareHost = hostnameOf(host);
@@ -342,6 +349,7 @@ export async function precheckProxyTarget(target: string, path: string): Promise
       ok: false,
       reason: 'forbidden_target',
       message: 'target host is private/loopback (set PROXY_ALLOW_PRIVATE to allow)',
+      delivered: false,
     };
   }
 
@@ -351,6 +359,7 @@ export async function precheckProxyTarget(target: string, path: string): Promise
       ok: false,
       reason: 'forbidden_target',
       message: 'refusing to send a credential over plaintext http to a non-loopback host',
+      delivered: false,
     };
   }
 
@@ -359,6 +368,7 @@ export async function precheckProxyTarget(target: string, path: string): Promise
       ok: false,
       reason: 'forbidden_target',
       message: 'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
+      delivered: false,
     };
   }
 
@@ -387,7 +397,7 @@ export async function proxyRequest(args: {
   try {
     url = new URL(`${scheme}://${host}${basePath}${path}`);
   } catch {
-    return { ok: false, reason: 'bad_request', message: 'invalid path' };
+    return { ok: false, reason: 'bad_request', message: 'invalid path', delivered: false };
   }
   for (const [k, v] of Object.entries(args.request.query ?? {})) url.searchParams.set(k, v);
 
@@ -434,6 +444,7 @@ export async function proxyRequest(args: {
   return await new Promise<ProxyOutcome>((resolve) => {
     let settled = false;
     let timedOut = false;
+    let sent = false; // request fully written to the socket → secret reached the target
     let timer: NodeJS.Timeout | undefined;
     const finish = (o: ProxyOutcome) => {
       if (settled) return;
@@ -480,6 +491,11 @@ export async function proxyRequest(args: {
         },
       );
 
+      // 'finish' fires once the request (headers + body) has been fully written to
+      // the socket — i.e. the secret-bearing request reached the target. Past this
+      // point a timeout/RST must NOT refund the use (at-most-once vs the target).
+      req.on('finish', () => (sent = true));
+
       timer = setTimeout(() => {
         timedOut = true;
         req.destroy();
@@ -487,25 +503,32 @@ export async function proxyRequest(args: {
 
       req.on('error', (err: NodeJS.ErrnoException) => {
         if (timedOut)
-          return finish({ ok: false, reason: 'timeout', message: 'downstream request timed out' });
+          return finish({
+            ok: false,
+            reason: 'timeout',
+            message: 'downstream request timed out',
+            delivered: sent,
+          });
         if (err?.code === BLOCKED_CODE)
           return finish({
             ok: false,
             reason: 'forbidden_target',
             message:
               'target host resolves to a private/metadata address (set PROXY_ALLOW_PRIVATE to allow)',
+            delivered: false, // blocked at lookup — never sent
           });
         finish({
           ok: false,
           reason: 'upstream_unreachable',
           message: 'failed to reach the downstream target',
+          delivered: sent, // post-send RST counts as delivered
         });
       });
 
       if (hasBody) req.write(args.request.body);
       req.end();
     } catch {
-      finish({ ok: false, reason: 'bad_request', message: 'invalid request header' });
+      finish({ ok: false, reason: 'bad_request', message: 'invalid request header', delivered: false });
     }
   });
 }

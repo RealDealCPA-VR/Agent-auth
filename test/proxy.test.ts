@@ -24,8 +24,10 @@ let dbSql: typeof import('../src/db/index.js').sql;
 let closedPort = 0; // a port that is bound then closed → connections are refused
 const saved = process.env.PROXY_ALLOW_PRIVATE;
 
+const savedTimeout = process.env.PROXY_TIMEOUT_MS;
 beforeAll(async () => {
   process.env.PROXY_ALLOW_PRIVATE = 'true';
+  process.env.PROXY_TIMEOUT_MS = '500'; // so the /slow route times out quickly
   server = http.createServer((req, res) => {
     downstream.lastAuth = req.headers.authorization ?? null;
     downstream.lastCookie = req.headers.cookie ?? null;
@@ -55,6 +57,13 @@ beforeAll(async () => {
         const c = (req.headers.cookie ?? 'none').replace(/[^a-z0-9-]/gi, '') || 'none';
         res.writeHead(200, { 'content-type': 'application/json', [`x-saw-${c}`]: '1' });
         res.end(JSON.stringify({ ok: true }));
+      } else if (url.startsWith('/slow')) {
+        // Connect succeeds + request is received, but the response is delayed past
+        // PROXY_TIMEOUT_MS → a response-phase timeout (delivered=true).
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        }, 2000);
       } else if (url.startsWith('/redirect')) {
         res.writeHead(302, { location: 'http://evil.example/' });
         res.end();
@@ -82,6 +91,8 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
   if (saved === undefined) delete process.env.PROXY_ALLOW_PRIVATE;
   else process.env.PROXY_ALLOW_PRIVATE = saved;
+  if (savedTimeout === undefined) delete process.env.PROXY_TIMEOUT_MS;
+  else process.env.PROXY_TIMEOUT_MS = savedTimeout;
 });
 
 beforeEach(async () => {
@@ -312,6 +323,26 @@ describe('proxy mode', () => {
       `SELECT use_count FROM credentials WHERE id = '${cred.id}'`,
     );
     expect(Number(rows[0]?.use_count ?? -1)).toBe(0);
+  });
+
+  it('does NOT refund the maxUses slot on a response-phase timeout (secret already delivered)', async () => {
+    const { token, pp, apiKey } = await setup();
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'slow',
+      type: 'api_key',
+      secret: SECRET,
+      maxUses: 1,
+    });
+    // The mock connects and receives the request but responds after the timeout.
+    const res = await proxy(apiKey, cred.id, { method: 'GET', path: '/slow' });
+    expect(res.statusCode).toBe(504);
+    // The request reached the target, so the use is consumed (at-most-once) — NOT
+    // refunded; a maxUses:1 credential is now exhausted.
+    const rows = await dbSql.unsafe<{ use_count: number }[]>(
+      `SELECT use_count FROM credentials WHERE id = '${cred.id}'`,
+    );
+    expect(Number(rows[0]?.use_count ?? -1)).toBe(1);
   });
 
   it('refunds the approval grant when the downstream proxy call fails (no re-approval)', async () => {

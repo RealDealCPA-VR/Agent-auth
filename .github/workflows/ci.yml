@@ -46,6 +46,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit (production deps must carry no known advisories)
+        run: pnpm audit --prod
+
       - name: Typecheck
         run: pnpm typecheck
 

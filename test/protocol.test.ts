@@ -20,6 +20,21 @@ describe('HTTP / protocol concerns', () => {
     expect(res.json()).toEqual({ status: 'ok' });
   });
 
+  it('routes a trailing-slash URL to the real handler (200), not a self-contradictory 405', async () => {
+    const res = await app.inject({ method: 'GET', url: '/healthz/' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('a non-empty text/plain body is a clean 415 (not 400/401)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { 'content-type': 'text/plain' },
+      payload: 'hello',
+    });
+    expect(res.statusCode).toBe(415);
+  });
+
   it('an unsupported content-type body is capped by bodyLimit (413, not unbounded read)', async () => {
     const big = 'x'.repeat(80 * 1024); // > BODY_LIMIT_BYTES (64 KiB)
     const res = await app.inject({

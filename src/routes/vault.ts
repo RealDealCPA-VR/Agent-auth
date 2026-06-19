@@ -337,10 +337,12 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         request: parsed.data,
       });
       if (!outcome.ok) {
-        // The downstream call failed AFTER useCredential charged the use, so the
-        // secret was never delivered to the agent — give the slot / approval grant
-        // back (mirrors the /use invariant that a rejected call never burns one).
-        await releaseUse(agent.passportId, id, result.consumedGrantId);
+        // Refund the slot / approval grant ONLY when the secret-bearing request
+        // never reached the target (pre-send failures: SSRF block, bad request,
+        // connect failure). A response-phase timeout / post-send RST already
+        // delivered the secret to the target, so the use counts at-most-once and
+        // must NOT be refunded (else a retry could exceed maxUses / one approval).
+        if (!outcome.delivered) await releaseUse(agent.passportId, id, result.consumedGrantId);
         const status =
           outcome.reason === 'forbidden_target'
             ? 403

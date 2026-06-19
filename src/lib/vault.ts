@@ -241,10 +241,12 @@ export async function getCredentialTarget(
 
 /**
  * Compensate a charged-but-undelivered use: restore a consumed single-use approval
- * grant and give back the maxUses slot. Used by the proxy route when the downstream
- * call fails AFTER useCredential charged (timeout / unreachable / connect-time
- * block) — so a transient network failure never bricks a maxUses:1 credential or
- * spends a human's one-shot approval. Best-effort; the decrement is floored at 0.
+ * grant and give back the maxUses slot. The proxy route calls this ONLY when the
+ * secret-bearing request never reached the target (pre-send failures: SSRF block,
+ * bad request, or a connection that never established) — so a genuine no-delivery
+ * never bricks a maxUses:1 credential or spends a human's one-shot approval. It must
+ * NOT be called for a response-phase timeout / post-send RST (the target already
+ * received the secret; the use counts at-most-once). Best-effort; floored at 0.
  */
 export async function releaseUse(
   passportId: string,

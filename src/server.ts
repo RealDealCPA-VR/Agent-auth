@@ -44,6 +44,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     ...(https ? { https } : {}),
     bodyLimit: env.BODY_LIMIT_BYTES,
     trustProxy: env.isProd,
+    // Route a trailing/doubled slash to the real handler instead of falling into
+    // the not-found path (which otherwise answered a slash variant with a
+    // self-contradictory 405). The not-found handler also excludes the request's
+    // own method as defense in depth.
+    routerOptions: { ignoreTrailingSlash: true, ignoreDuplicateSlashes: true },
     // Accept an inbound correlation id or generate one; it appears in every log
     // line (Fastify logs reqId) and is echoed back to the caller.
     genReqId: (req) => {
@@ -119,7 +124,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   // parser so Fastify's rawBody enforces `bodyLimit` BEFORE reading the whole
   // stream — a function-style parser would bypass the limit (unbounded read), so an
   // over-limit unsupported body is a 413 (FST_ERR_CTP_BODY_TOO_LARGE), not a drain.
-  app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body: Buffer, done) => {
+  const rejectUnsupportedBody = (_req: unknown, body: Buffer, done: (err: Error | null, v?: undefined) => void) => {
     if (body.length === 0) return done(null, undefined);
     done(
       Object.assign(new Error('unsupported content-type'), {
@@ -128,7 +133,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       }),
       undefined,
     );
-  });
+  };
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, rejectUnsupportedBody);
+  // Fastify ships a built-in text/plain parser that would otherwise SHADOW the '*'
+  // catch-all (an exact content-type match wins), making a text/plain body a 400/401
+  // instead of the uniform 415. No route consumes text/plain, so reject it the same.
+  app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, rejectUnsupportedBody);
 
   // Consistent 404 + error envelope. MUST be registered before the route plugins
   // so child contexts inherit it (Fastify only propagates to plugins registered
@@ -146,6 +156,10 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
     }
     allowed.delete('HEAD'); // implied by GET; don't advertise separately
+    // Exclude the request's OWN method: if a route exists for this exact method but
+    // the URL still missed the router, the resource doesn't exist at this exact path
+    // — a 404, not a self-contradictory 405 whose Allow lists the requested method.
+    allowed.delete(req.method);
     if (allowed.size > 0) {
       reply.header('allow', [...allowed].sort().join(', '));
       return reply

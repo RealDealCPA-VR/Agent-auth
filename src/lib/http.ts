@@ -10,6 +10,16 @@ export interface ErrorEnvelope {
   error: { code: string; message: string; requestId: string; details?: unknown };
 }
 
+/**
+ * Extract the Postgres SQLSTATE code from a thrown error. drizzle-orm 0.45 wraps
+ * driver errors in a DrizzleQueryError, nesting the original (with `.code`) under
+ * `.cause` — so check both the error and its cause.
+ */
+export function pgErrorCode(err: unknown): string | undefined {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code ?? e?.cause?.code;
+}
+
 export function errorBody(
   req: FastifyRequest,
   code: string,

@@ -6,7 +6,7 @@ import { hashSecret, verifySecret, getDummyHash } from '../crypto/secrets.js';
 import { issueSession, revokeSession } from '../auth/human.js';
 import { requireHuman } from './guards.js';
 import { audit } from '../lib/audit.js';
-import { fail } from '../lib/http.js';
+import { fail, pgErrorCode } from '../lib/http.js';
 import { env } from '../env.js';
 
 const credsSchema = z.object({
@@ -55,7 +55,7 @@ export async function principalRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         // Concurrent registration of the same email loses the unique-constraint
         // race (Postgres 23505) — return the same 409 as the pre-check path.
-        if ((err as { code?: string }).code === '23505') {
+        if (pgErrorCode(err) === '23505') {
           return fail(req, reply, 409, 'conflict', 'email already registered');
         }
         throw err;
