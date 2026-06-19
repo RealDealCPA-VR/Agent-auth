@@ -57,7 +57,13 @@ const injectionSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('header'),
     name: z.string().min(1).max(64).regex(HEADER_NAME_RE, 'invalid header name'),
-    prefix: z.string().max(64).optional(),
+    // The prefix is concatenated into the outgoing header value at proxy time;
+    // reject CR/LF/NUL so it can never make the credential structurally unusable.
+    prefix: z
+      .string()
+      .max(64)
+      .regex(/^[^\r\n\0]*$/, 'invalid header prefix')
+      .optional(),
   }),
   z.object({ mode: z.literal('query'), name: z.string().min(1).max(64) }),
 ]);

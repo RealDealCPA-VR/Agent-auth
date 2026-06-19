@@ -23,15 +23,17 @@ Do **not** open public issues for security reports. We aim to acknowledge within
 - **Least authority.** Agents are bound to exactly one passport and gated by
   scopes (`vault:read`, `vault:use`, `target:<host>`). Per-credential policies add
   max-use counts, time windows, and human approval gates.
-- **Tamper-evident audit.** Every security event is appended to an HMAC
-  hash-chain; `/v1/audit/verify` recomputes the chain to detect any
-  insert/update/delete/reorder. Database triggers block UPDATE/DELETE/TRUNCATE on
-  the audit table via the normal SQL path. Note this DB-level enforcement is
+- **Tamper-evident audit.** Every security event is appended to a forward-linked
+  HMAC hash-chain; `/v1/audit/verify` recomputes the chain to detect any
+  insert/update/reorder or deletion of an *interior* row. (A forward chain
+  cannot, by itself, detect **tail-truncation** — deletion of the newest
+  contiguous rows leaves every surviving link self-consistent and needs no key.)
+  Prevention of any deletion, including tail-truncation, is enforced by database
+  triggers that block UPDATE/DELETE/TRUNCATE on the normal SQL path; this is
   preventive only against a role that cannot disable triggers — a table
   owner/superuser can `DISABLE TRIGGER`, so **run the runtime under a
   least-privilege, non-owner DB role** (INSERT/SELECT only, no TRUNCATE/DDL) and
-  keep a separate owner role for migrations. The HMAC hash chain is the durable
-  *detective* control regardless of DB privileges.
+  keep a separate owner role for migrations.
 
 ## Proxy mode (the secret never leaves the vault)
 

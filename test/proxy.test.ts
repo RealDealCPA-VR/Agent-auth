@@ -388,6 +388,24 @@ describe('proxy mode', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('rejects a header-mode injection prefix containing CR/LF at deposit (400)', async () => {
+    const { token } = await h.registerAndLogin(app);
+    const pp = await h.createPassport(app, token);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/passports/${pp}/credentials`,
+      headers: h.auth(token),
+      payload: {
+        target: 'api.test',
+        label: 'x',
+        type: 'api_key',
+        secret: 's',
+        injection: { mode: 'header', name: 'authorization', prefix: 'token \r\nX-Evil: 1' },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {
     const { token, pp } = await setup();
     // A fresh credential with maxUses:1 at the same mock target.

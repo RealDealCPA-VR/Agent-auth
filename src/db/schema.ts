@@ -235,8 +235,10 @@ export const auditAction = pgEnum('audit_action', [
 
 /**
  * audit_events — append-only, tamper-evident record of every security-relevant
- * action. Each row is linked to the previous by a hash chain (`prevHash`->`hash`,
- * HMAC-keyed), so deletion or modification of any row breaks the chain. Stores
+ * action. Each row is linked to the previous by a forward hash chain
+ * (`prevHash`->`hash`, HMAC-keyed), so modification/reorder or deletion of an
+ * INTERIOR row breaks the chain (tail-truncation is caught by the triggers, not
+ * the chain). Stores
  * who/what/when and an outcome, never the secret itself. Reference columns are
  * intentionally NOT foreign keys, so audit rows survive deletion of the entities
  * they describe. DB triggers block UPDATE/DELETE/TRUNCATE on the normal SQL path

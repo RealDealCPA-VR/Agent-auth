@@ -7,7 +7,9 @@ import postgres from 'postgres';
  * migrations and the audit append-only trigger to it. Runs once per `vitest`.
  */
 const TEST_DB = 'agentauth_test';
-const ADMIN_URL = 'postgres://agentauth:agentauth@localhost:5433/agentauth';
+// Connect to the always-present `postgres` maintenance DB to create the test DB.
+// (Using the app `agentauth` DB would break CI, where only `agentauth_test` exists.)
+const ADMIN_URL = 'postgres://agentauth:agentauth@localhost:5433/postgres';
 const TEST_URL = `postgres://agentauth:agentauth@localhost:5433/${TEST_DB}`;
 
 export default async function setup(): Promise<void> {
