@@ -20,6 +20,18 @@ describe('HTTP / protocol concerns', () => {
     expect(res.json()).toEqual({ status: 'ok' });
   });
 
+  it('a malformed x-request-id header does not 500 (rejected, not echoed verbatim)', async () => {
+    // A control char in x-request-id would throw ERR_INVALID_CHAR when echoed back,
+    // bypassing the error envelope. genReqId must reject it and use a fresh uuid.
+    const res = await app.inject({
+      method: 'GET',
+      url: '/healthz',
+      headers: { 'x-request-id': 'bad\r\nid\x01' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-request-id']).not.toBe('bad\r\nid\x01');
+  });
+
   it('GET /readyz -> 200 {status:"ready", db:true}', async () => {
     const res = await app.inject({ method: 'GET', url: '/readyz' });
     expect(res.statusCode).toBe(200);

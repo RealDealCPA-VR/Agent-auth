@@ -148,6 +148,23 @@ describe('audit trail + tamper evidence', () => {
     expect(body.count).toBeUndefined();
   });
 
+  it('a mixed-case UUID in a path id does not break the audit chain', async () => {
+    const { token, passportId } = await runLifecycle();
+    const { apiKey } = await issueAgent(app, token, passportId, ['vault:read', 'target:*']);
+    // A vault:read-only agent hits the /use deny path, which audits credentialId
+    // with the RAW path id, BEFORE any format check. An uppercase UUID must be
+    // canonicalized (lowercased) for the hash, or the uuid column's lowercase
+    // storage would make verify falsely report tamper for every tenant.
+    const upper = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/vault/credentials/${upper}/use`,
+      headers: auth(apiKey),
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await verifyAuditChain()).ok).toBe(true);
+  });
+
   it('an undefined-valued detail key does not falsely break the chain', async () => {
     await runLifecycle();
     // jsonb drops an undefined-valued key on store; the hash must omit it too, or

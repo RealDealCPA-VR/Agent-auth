@@ -228,6 +228,27 @@ const schema = z
             });
           }
         }
+        // authUrl/tokenUrl must be http(s) URLs — validated at boot so a malformed
+        // registry fails cleanly instead of throwing a 500 on the first OAuth call
+        // (new URL(authUrl) in buildAuthorizeUrl / fetch(tokenUrl)).
+        for (const key of ['authUrl', 'tokenUrl'] as const) {
+          const u = c[key];
+          if (typeof u === 'string' && u.length > 0) {
+            let parsed: URL | null = null;
+            try {
+              parsed = new URL(u);
+            } catch {
+              parsed = null;
+            }
+            if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['OAUTH_PROVIDERS'],
+                message: `provider "${name}" ${key} must be a valid http(s) URL`,
+              });
+            }
+          }
+        }
         if (
           c.scopes !== undefined &&
           (!Array.isArray(c.scopes) || c.scopes.some((s) => typeof s !== 'string'))

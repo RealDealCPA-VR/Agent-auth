@@ -31,11 +31,15 @@ function sanitizeIds(input: AuditInput): AuditInput {
   const bad: Record<string, string> = {};
   const fix = (key: 'principalId' | 'passportId' | 'agentId' | 'credentialId') => {
     const v = input[key];
-    if (typeof v === 'string' && !UUID_RE.test(v)) {
+    if (typeof v !== 'string') return v ?? null;
+    if (!UUID_RE.test(v)) {
       bad[key] = v;
       return null;
     }
-    return v ?? null;
+    // Canonicalize to lowercase: the uuid column stores lowercase, so the hash
+    // must be computed over the lowercase form or verify (which reads the stored
+    // value back) would recompute a different hash and falsely report tampering.
+    return v.toLowerCase();
   };
   return {
     ...input,

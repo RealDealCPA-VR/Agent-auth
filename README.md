@@ -121,7 +121,7 @@ no stack-trace leakage · fail-fast secret validation (won't even boot insecure)
 
 ---
 
-## ⚡ Quickstart — one command (Docker)
+## ⚡ Quickstart (Docker only — no host toolchain)
 
 ```bash
 cp .env.example .env
@@ -129,13 +129,15 @@ node -e "console.log('MASTER_KEY='+require('crypto').randomBytes(32).toString('b
 node -e "console.log('JWT_SECRET='+require('crypto').randomBytes(32).toString('base64'))" >> .env
 # ↑ edit .env so each key appears once. Save .env as UTF-8 **without a BOM**.
 
-docker compose up --build        # app + db + auto-migrate → http://localhost:8080
-pnpm agentauth:init              # prints a ready-to-use AGENT API KEY + base URL
+docker compose up -d --build     # app + db + auto-migrate → http://localhost:8080
+docker compose exec app node dist/cli/bootstrap.js   # prints a ready-to-use AGENT API KEY
 ```
 
 That's it: `docker compose up` brings up the database, applies migrations, and
-serves the API; `agentauth:init` mints a principal, a passport, and an agent key
-you can hand straight to an agent (via the **MCP server**, an **SDK**, or raw HTTP).
+serves the API; the in-container `bootstrap.js` mints a principal, a passport, and
+an agent key you can hand straight to an agent (via the **MCP server**, an **SDK**,
+or raw HTTP). On a host with the toolchain installed (`pnpm install`) you can run
+`pnpm agentauth:init` instead.
 
 <details><summary>Local dev (no Docker for the app)</summary>
 
@@ -221,7 +223,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 160 tests, all green
+## 🧪 Tested like a vault — 162 tests, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.

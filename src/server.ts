@@ -49,7 +49,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     genReqId: (req) => {
       const hdr = req.headers['x-request-id'];
       const v = Array.isArray(hdr) ? hdr[0] : hdr;
-      return v && v.length <= 200 ? v : randomUUID();
+      // Only adopt an inbound id that is safe to echo back in a response header —
+      // visible ASCII, no CR/LF/control chars. Otherwise reply.header() would throw
+      // ERR_INVALID_CHAR during serialization, bypassing the uniform error envelope.
+      return v && /^[\x21-\x7e]{1,200}$/.test(v) ? v : randomUUID();
     },
     logger: {
       level: env.LOG_LEVEL,
