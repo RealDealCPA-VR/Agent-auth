@@ -155,6 +155,36 @@ describe('target scoping + expiry (integration)', () => {
     }
   });
 
+  it('canonicalizes a deposited target (whitespace + trailing dots) so list and use agree', async () => {
+    const { token } = await registerAndLogin(app);
+    const pp = await createPassport(app, token);
+    await deposit(app, token, pp, {
+      target: '  GitHub.com..  ',
+      label: 'gh',
+      type: 'api_key',
+      secret: 's_norm',
+    });
+    const agent = await issueAgent(app, token, pp, [
+      'vault:read',
+      'vault:use',
+      'target:github.com',
+    ]);
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/vault/credentials',
+      headers: auth(agent.apiKey),
+    });
+    const items = list.json().items;
+    expect(items).toHaveLength(1); // discoverable (SQL host == gate host)
+    expect(items[0].target).toBe('github.com'); // trimmed, lowercased, dots dropped
+    const useRes = await app.inject({
+      method: 'POST',
+      url: `/v1/vault/credentials/${items[0].id}/use`,
+      headers: auth(agent.apiKey),
+    });
+    expect(useRes.statusCode).toBe(200);
+  });
+
   it('target matching is case-insensitive end-to-end', async () => {
     const { token } = await registerAndLogin(app);
     const pp = await createPassport(app, token);

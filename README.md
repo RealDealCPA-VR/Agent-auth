@@ -125,8 +125,12 @@ no stack-trace leakage · fail-fast secret validation (won't even boot insecure)
 
 ```bash
 cp .env.example .env
-node -e "console.log('MASTER_KEY='+require('crypto').randomBytes(32).toString('base64'))" >> .env
-node -e "console.log('JWT_SECRET='+require('crypto').randomBytes(32).toString('base64'))" >> .env
+# Generate two 32-byte base64 secrets. With openssl (no Node needed):
+echo "MASTER_KEY=$(openssl rand -base64 32)" >> .env
+echo "JWT_SECRET=$(openssl rand -base64 32)" >> .env
+# …or, if you have neither openssl nor host Node, use the Docker image you're
+# about to build:  docker run --rm node:22-alpine node -e \
+#   "console.log(require('crypto').randomBytes(32).toString('base64'))"
 # ↑ edit .env so each key appears once. Save .env as UTF-8 **without a BOM**.
 
 docker compose up -d --build     # app + db + auto-migrate → http://localhost:8080
@@ -223,7 +227,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 165 tests, all green
+## 🧪 Tested like a vault — 167 tests, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.

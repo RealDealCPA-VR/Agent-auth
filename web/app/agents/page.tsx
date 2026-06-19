@@ -285,10 +285,12 @@ function AgentsView() {
                     ))}
                   </td>
                   <td>
-                    {a.active ? (
-                      <span className="badge ok">active</span>
-                    ) : (
+                    {!a.active || a.revokedAt ? (
                       <span className="badge bad">revoked</span>
+                    ) : a.expiresAt && new Date(a.expiresAt).getTime() <= Date.now() ? (
+                      <span className="badge warn">expired</span>
+                    ) : (
+                      <span className="badge ok">active</span>
                     )}
                   </td>
                   <td className="muted">

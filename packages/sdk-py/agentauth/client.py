@@ -513,12 +513,14 @@ class AgentAuthClient(_BaseClient):
         Pages through the agent's credential listing. Most agents are scoped to
         a handful of targets, so this is cheap in practice.
         """
+        # Hosts are case-insensitive; the server stores targets lowercased.
+        want = target.lower()
         offset = 0
         while True:
             page = self.list_credentials(limit=limit, offset=offset)
             items: List[JSON] = page.get("items", [])
             for item in items:
-                if item.get("target") == target:
+                if str(item.get("target", "")).lower() == want:
                     return item.get("id")
             pagination = page.get("pagination", {})
             returned = pagination.get("returned", len(items))

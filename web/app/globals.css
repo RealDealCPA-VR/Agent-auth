@@ -253,6 +253,10 @@ tr:last-child td {
   color: var(--err);
   border-color: rgba(255, 77, 79, 0.4);
 }
+.badge.warn {
+  color: #e0a800;
+  border-color: rgba(224, 168, 0, 0.4);
+}
 
 .chip {
   display: inline-block;

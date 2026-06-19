@@ -54,18 +54,23 @@ export async function depositCredential(opts: {
   requireApproval?: boolean;
   injection?: Injection | null;
 }) {
+  // Canonicalize the target ONCE at the single write chokepoint: lowercase (hosts
+  // are case-insensitive), trim surrounding whitespace, drop trailing dots — so the
+  // SQL list filter and the targetHost()/allowsTarget gate reduce it identically
+  // (no whitespace/multi-dot divergence) and the AAD binds to the canonical form.
+  const target = opts.target.trim().replace(/\.+$/, '').toLowerCase();
   const dek = await loadDek(opts.passportId);
   if (!dek) return null;
   const secretBuf = Buffer.from(opts.secret, 'utf8');
   // Bind the ciphertext to its passport + target so it can't be replayed elsewhere.
-  const aad = Buffer.from(`${opts.passportId}:${opts.target}`);
+  const aad = Buffer.from(`${opts.passportId}:${target}`);
   try {
     const sealed = seal(dek, secretBuf, aad);
     const [row] = await db
       .insert(schema.credentials)
       .values({
         passportId: opts.passportId,
-        target: opts.target,
+        target,
         label: opts.label,
         type: opts.type,
         sealed,
@@ -337,10 +342,15 @@ export async function useCredential(
     reservedSlot = true;
   }
 
-  const dek = await loadDek(passportId);
-  if (!dek) return undelivered({ status: 'not_found' });
-  const aad = Buffer.from(`${passportId}:${cred.target}`);
+  // Load the DEK INSIDE the try so a throw (notably a KMS unwrap network error)
+  // is routed through undelivered() and refunds the reserved slot / approval grant
+  // instead of leaking them on a transient failure.
+  let dek: Buffer | null = null;
+  let aad: Buffer | null = null;
   try {
+    dek = await loadDek(passportId);
+    if (!dek) return undelivered({ status: 'not_found' });
+    aad = Buffer.from(`${passportId}:${cred.target}`);
     const plaintextBuf = open(dek, cred.sealed as SealedBox, aad);
     let secret = plaintextBuf.toString('utf8');
     plaintextBuf.fill(0); // scrub the decrypted buffer; the string is the caller's to use
@@ -372,10 +382,11 @@ export async function useCredential(
       consumedGrantId,
     };
   } catch {
-    // Tampering, wrong key, or corruption — never surface crypto internals.
+    // Tampering, wrong key, corruption, or a key-provider (KMS) failure — never
+    // surface crypto internals; refund any charge taken for this undelivered use.
     return undelivered({ status: 'decrypt_error' });
   } finally {
-    dek.fill(0);
-    aad.fill(0); // scrub for consistency (AAD is non-secret)
+    dek?.fill(0);
+    aad?.fill(0); // scrub for consistency (AAD is non-secret)
   }
 }

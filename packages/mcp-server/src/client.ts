@@ -264,10 +264,12 @@ export class AgentAuthClient {
    * (by listing order) wins.
    */
   private async resolveTarget(target: string): Promise<string> {
+    // Hosts are case-insensitive; the server stores targets lowercased.
+    const want = target.toLowerCase();
     let offset = 0;
     for (;;) {
       const page = await this.listCredentials({ limit: MAX_PAGE_SIZE, offset });
-      const match = page.items.find((c) => c.target === target);
+      const match = page.items.find((c) => c.target.toLowerCase() === want);
       if (match) return match.id;
 
       offset += page.items.length;

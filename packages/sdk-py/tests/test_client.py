@@ -298,6 +298,27 @@ def test_use_credential_by_target_resolves_via_listing():
     ]
 
 
+def test_use_credential_target_is_case_insensitive():
+    """A mixed-case host still resolves the lowercased listing entry (the server
+    stores targets lowercased)."""
+    gh = "22222222-2222-4222-8222-222222222222"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/vault/credentials":
+            return ok({
+                "items": [{"id": gh, "target": "github.com"}],
+                "pagination": {"limit": 100, "offset": 0, "total": 1, "returned": 1},
+            })
+        if request.url.path == f"/v1/vault/credentials/{gh}/use":
+            return ok({"id": gh, "target": "github.com", "secret": "resolved"})
+        raise AssertionError(request.url.path)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    out = client.use_credential("GitHub.COM")
+    assert out["id"] == gh
+    assert out["secret"] == "resolved"
+
+
 def test_use_credential_target_not_found_raises_404():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/use"):

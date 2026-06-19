@@ -44,6 +44,11 @@ const metadataSchema = z
     'metadata too large (max 4 KiB)',
   );
 
+// An HTTP header field-name token (RFC 7230). Validated at deposit so a header-mode
+// injection name can never be a value the HTTP client rejects at proxy time (which
+// would leave the credential structurally unusable via proxy mode).
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
 // How the secret is injected into a server-side proxied request (proxy mode).
 const injectionSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('bearer') }),
@@ -51,7 +56,7 @@ const injectionSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('cookie') }),
   z.object({
     mode: z.literal('header'),
-    name: z.string().min(1).max(64),
+    name: z.string().min(1).max(64).regex(HEADER_NAME_RE, 'invalid header name'),
     prefix: z.string().max(64).optional(),
   }),
   z.object({ mode: z.literal('query'), name: z.string().min(1).max(64) }),
