@@ -603,8 +603,12 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
           // The mfa.consumed audit was appended atomically with the consume inside
           // fetchMfaCode — the code is only delivered if that row is durably chained.
           // `code` is secret-bearing (the SDK injects it into the DOM and never
-          // returns it up to the caller's reasoning layer).
-          return reply.send({ status: 'approved', code: res.code, by: res.by, at: res.at });
+          // returns it up to the caller's reasoning layer). no-store so the one-time
+          // code can't be cached by any intermediary proxy/cache.
+          return reply
+            .header('cache-control', 'no-store')
+            .header('pragma', 'no-cache')
+            .send({ status: 'approved', code: res.code, by: res.by, at: res.at });
       }
     },
   );

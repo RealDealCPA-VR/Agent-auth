@@ -89,6 +89,8 @@ describe('MFA approval-queue handoff', () => {
     expect(got.json().status).toBe('approved');
     expect(got.json().code).toBe('123456');
     expect(got.json().by).toBe(s.email);
+    // The secret-bearing response must not be cached by any intermediary.
+    expect(got.headers['cache-control']).toContain('no-store');
 
     // Single-use: second fetch is 410 gone.
     expect((await pollMfa(s.agentKey, s.credId, requestId)).statusCode).toBe(410);

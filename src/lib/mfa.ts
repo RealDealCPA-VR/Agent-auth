@@ -345,7 +345,15 @@ export async function approveMfaRequest(
     const [updated] = await tx
       .update(schema.mfaRequests)
       .set({ status: 'approved', sealedCode, decidedAt: new Date(), decidedBy: principalId })
-      .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
+      // Re-check the TTL in the guard so a row that expired during the (possibly
+      // slow KMS-backed) seal can't be flipped to 'approved' — no stale approval.
+      .where(
+        and(
+          eq(schema.mfaRequests.id, row.id),
+          eq(schema.mfaRequests.status, 'pending'),
+          gt(schema.mfaRequests.expiresAt, new Date()),
+        ),
+      )
       .returning();
     if (!updated) return { ok: false, reason: 'not_pending' };
     await audit(
