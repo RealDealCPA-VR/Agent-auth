@@ -59,6 +59,8 @@ export async function createMfaRequest(args: {
   kind: string;
   channelHint?: string | null;
   promptText?: string | null;
+  target?: string;
+  ip?: string;
 }): Promise<CreateMfaResult> {
   if (!MFA_KINDS.has(args.kind)) return { ok: false, reason: 'bad_kind' };
 
@@ -119,6 +121,19 @@ export async function createMfaRequest(args: {
         expiresAt: new Date(now + MFA_TTL_MS),
       })
       .returning({ id: schema.mfaRequests.id });
+    // Audit the request in the SAME transaction as the insert (chained-or-rolled-back).
+    await audit(
+      {
+        action: 'mfa.requested',
+        success: true,
+        agentId: args.agentId,
+        passportId: args.passportId,
+        credentialId: args.credentialId,
+        detail: { requestId: row!.id, challengeId: args.challengeId, kind: args.kind, target: args.target },
+        ip: args.ip,
+      },
+      tx,
+    );
     return { ok: true, requestId: row!.id };
   });
 }
@@ -294,6 +309,7 @@ export async function approveMfaRequest(
   principalId: string,
   requestId: string,
   code?: string | null,
+  opts: { ip?: string } = {},
 ): Promise<DecideMfaResult> {
   if (!UUID_RE.test(requestId)) return { ok: false, reason: 'not_found' };
   const [row] = await db
@@ -320,17 +336,37 @@ export async function approveMfaRequest(
     }
   }
 
-  const [updated] = await db
-    .update(schema.mfaRequests)
-    .set({ status: 'approved', sealedCode, decidedAt: new Date(), decidedBy: principalId })
-    .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
-    .returning();
-  if (!updated) return { ok: false, reason: 'not_pending' };
-  return { ok: true, row: updated };
+  // Decision + audit commit together: an audit-write failure rolls the approval back.
+  return db.transaction(async (tx): Promise<DecideMfaResult> => {
+    const [updated] = await tx
+      .update(schema.mfaRequests)
+      .set({ status: 'approved', sealedCode, decidedAt: new Date(), decidedBy: principalId })
+      .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
+      .returning();
+    if (!updated) return { ok: false, reason: 'not_pending' };
+    await audit(
+      {
+        action: 'mfa.approved',
+        success: true,
+        principalId,
+        passportId: updated.passportId,
+        credentialId: updated.credentialId,
+        agentId: updated.agentId,
+        detail: { requestId, challengeId: updated.challengeId, kind: updated.kind },
+        ip: opts.ip,
+      },
+      tx,
+    );
+    return { ok: true, row: updated };
+  });
 }
 
 /** Human-side: deny a pending MFA request. Owner-or-delegate only. */
-export async function denyMfaRequest(principalId: string, requestId: string): Promise<DecideMfaResult> {
+export async function denyMfaRequest(
+  principalId: string,
+  requestId: string,
+  opts: { ip?: string } = {},
+): Promise<DecideMfaResult> {
   if (!UUID_RE.test(requestId)) return { ok: false, reason: 'not_found' };
   const [row] = await db
     .select()
@@ -340,13 +376,28 @@ export async function denyMfaRequest(principalId: string, requestId: string): Pr
   if (!row) return { ok: false, reason: 'not_found' };
   if (!(await mayApprove(row, principalId))) return { ok: false, reason: 'forbidden' };
   if (row.status !== 'pending') return { ok: false, reason: 'not_pending' };
-  const [updated] = await db
-    .update(schema.mfaRequests)
-    .set({ status: 'denied', decidedAt: new Date(), decidedBy: principalId })
-    .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
-    .returning();
-  if (!updated) return { ok: false, reason: 'not_pending' };
-  return { ok: true, row: updated };
+  return db.transaction(async (tx): Promise<DecideMfaResult> => {
+    const [updated] = await tx
+      .update(schema.mfaRequests)
+      .set({ status: 'denied', decidedAt: new Date(), decidedBy: principalId })
+      .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
+      .returning();
+    if (!updated) return { ok: false, reason: 'not_pending' };
+    await audit(
+      {
+        action: 'mfa.denied',
+        success: true,
+        principalId,
+        passportId: updated.passportId,
+        credentialId: updated.credentialId,
+        agentId: updated.agentId,
+        detail: { requestId, challengeId: updated.challengeId },
+        ip: opts.ip,
+      },
+      tx,
+    );
+    return { ok: true, row: updated };
+  });
 }
 
 /** List pending, non-expired MFA requests this principal may resolve (owner or a

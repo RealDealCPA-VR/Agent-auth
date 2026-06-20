@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireHuman } from './guards.js';
 import { approveMfaRequest, denyMfaRequest, listPendingMfaFor } from '../lib/mfa.js';
-import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, page } from '../lib/http.js';
 
 /**
@@ -56,7 +55,7 @@ export async function mfaRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid body', parsed.error.flatten());
 
-      const result = await approveMfaRequest(req.human!.sub, id, parsed.data.code ?? null);
+      const result = await approveMfaRequest(req.human!.sub, id, parsed.data.code ?? null, { ip: req.ip });
       if (!result.ok) {
         // forbidden (not owner/delegate) is surfaced as 404 so existence isn't leaked.
         if (result.reason === 'not_pending')
@@ -65,17 +64,7 @@ export async function mfaRoutes(app: FastifyInstance): Promise<void> {
           return fail(req, reply, 400, 'invalid_request', 'a one-time code is required for this MFA kind');
         return fail(req, reply, 404, 'not_found', 'mfa request not found');
       }
-      await audit({
-        action: 'mfa.approved',
-        success: true,
-        principalId: req.human!.sub,
-        passportId: result.row.passportId,
-        credentialId: result.row.credentialId,
-        agentId: result.row.agentId,
-        // Never log the code; record correlation + kind only.
-        detail: { requestId: id, challengeId: result.row.challengeId, kind: result.row.kind },
-        ip: req.ip,
-      });
+      // mfa.approved is audited atomically inside approveMfaRequest's transaction.
       return reply.send({ id, status: 'approved' });
     },
   );
@@ -85,22 +74,13 @@ export async function mfaRoutes(app: FastifyInstance): Promise<void> {
     { schema: { tags: ['mfa'], summary: 'Deny an MFA request', security: [{ humanBearer: [] }] } },
     async (req, reply) => {
       const { id } = req.params as { id: string };
-      const result = await denyMfaRequest(req.human!.sub, id);
+      const result = await denyMfaRequest(req.human!.sub, id, { ip: req.ip });
       if (!result.ok) {
         if (result.reason === 'not_pending')
           return fail(req, reply, 409, 'conflict', 'mfa request is not pending');
         return fail(req, reply, 404, 'not_found', 'mfa request not found');
       }
-      await audit({
-        action: 'mfa.denied',
-        success: true,
-        principalId: req.human!.sub,
-        passportId: result.row.passportId,
-        credentialId: result.row.credentialId,
-        agentId: result.row.agentId,
-        detail: { requestId: id, challengeId: result.row.challengeId },
-        ip: req.ip,
-      });
+      // mfa.denied is audited atomically inside denyMfaRequest's transaction.
       return reply.send({ id, status: 'denied' });
     },
   );

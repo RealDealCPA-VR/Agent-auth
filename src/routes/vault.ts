@@ -559,6 +559,8 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         kind: parsed.data.kind,
         channelHint: parsed.data.channelHint ?? null,
         promptText: parsed.data.promptText ?? null,
+        target: meta.target,
+        ip: req.ip,
       });
       if (!result.ok) {
         if (result.reason === 'rate_limited')
@@ -567,17 +569,7 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
           return fail(req, reply, 400, 'invalid_request', 'unknown mfa kind');
         return fail(req, reply, 404, 'not_found', 'credential not found');
       }
-
-      await audit({
-        action: 'mfa.requested',
-        success: true,
-        agentId: agent.agentId,
-        passportId: agent.passportId,
-        credentialId: id,
-        // Never log the prompt/secret; record correlation + kind only.
-        detail: { requestId: result.requestId, challengeId: parsed.data.challengeId, kind: parsed.data.kind, target: meta.target },
-        ip: req.ip,
-      });
+      // mfa.requested is audited atomically inside createMfaRequest's transaction.
       return reply.send({ requestId: result.requestId, status: 'pending' });
     },
   );
