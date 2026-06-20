@@ -128,7 +128,12 @@ async function main(): Promise<void> {
       pollIntervalMs: 500,
     });
     await approveAsHuman(session.token, summary.mfa.challengeId, '123456');
-    console.log('MFA resolved →', JSON.stringify(await resolving)); // non-secret; no code
+    const r = await resolving;
+    console.log('MFA resolved →', JSON.stringify(r)); // non-secret; no code
+    // Fail loudly if the code was not actually applied / the flow didn't complete.
+    if (!r.resolved || !page.url().includes('dashboard')) {
+      throw new Error(`MFA flow did not complete: ${JSON.stringify(r)} url=${page.url()}`);
+    }
   }
 
   console.log('final page:', page.url()); // .../dashboard.html → transcript available

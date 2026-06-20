@@ -1292,4 +1292,28 @@ describe('browser hardening (Phase 4)', () => {
     expect(events.some((e) => e.kind === 'clearCookies')).toBe(true);
     expect(events.some((e) => e.kind === 'goto' && e.arg === 'about:blank')).toBe(true);
   });
+
+  it('force-logout clears cookies on a Puppeteer page (no context) on revoke 401', async () => {
+    stubFetch([{ status: 401, body: { error: { code: 'unauthorized', message: 'revoked' } } }]);
+    const deleted: unknown[] = [];
+    const gotos: string[] = [];
+    const page = {
+      goto: (u: string) => {
+        gotos.push(u);
+        return Promise.resolve(null);
+      },
+      evaluate: () => Promise.resolve(null),
+      click: () => Promise.resolve(null),
+      setCookie: () => Promise.resolve(null), // Puppeteer-shaped (no context())
+      cookies: () => Promise.resolve([{ name: 'sid', domain: 'x', path: '/' }]),
+      deleteCookie: (...cs: unknown[]) => {
+        deleted.push(...cs);
+        return Promise.resolve(null);
+      },
+    } as unknown as BrowserPage;
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    await expect(aa.browserLogin(page, PLAN_UUID)).rejects.toMatchObject({ status: 401 });
+    expect(deleted).toHaveLength(1); // Puppeteer cookie cleared
+    expect(gotos).toContain('about:blank');
+  });
 });

@@ -92,6 +92,17 @@ credential requires an explicit `form` spec). This preserves scope separation:
 browser-login requires `vault:use`, so an agent issued only `vault:proxy` cannot
 obtain a secret-bearing plan.
 
+**Raw-plan path (`vault:browser:raw`).** The server returns the same secret-bearing
+plan whether or not the SDK confines it — so `vault:use` is what gates secret
+*exposure*, and `vault:browser:raw` gates the *self-handoff affordance*. The
+`browserLogin(page, …)` helper (which applies the plan and keeps the secret out of
+the agent's reasoning) needs only `vault:use`. The explicit `getBrowserLoginPlan` /
+`POST …/browser-login?raw=true` path — which returns the plan to the caller to hold
+itself — additionally requires the **off-by-default `vault:browser:raw`** scope
+(`403 missing_scope` without it; an off-by-default checkbox at agent-issue time), so
+the liability path is opt-in per agent. The MFA self-handoff helper `resolveMfa`
+likewise injects the human-approved one-time code into the DOM and never returns it.
+
 ## Additional controls
 
 - **KMS-backed keys.** With `KEY_PROVIDER=kms`, the master key never enters the

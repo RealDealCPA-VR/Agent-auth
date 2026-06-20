@@ -47,8 +47,8 @@ function MfaView() {
     setError(null);
     setActing(req.id);
     try {
-      // Code kinds send the entered value; push/webauthn approve with no code.
-      const code = CODE_KINDS.has(req.kind) ? codes[req.id] : undefined;
+      // Code kinds send the trimmed entered value; push/webauthn approve with no code.
+      const code = CODE_KINDS.has(req.kind) ? (codes[req.id] ?? '').trim() : undefined;
       await api.approveMfa(req.id, code);
       remove(req.id);
     } catch (err) {

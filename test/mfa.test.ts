@@ -157,6 +157,22 @@ describe('MFA approval-queue handoff', () => {
     expect(list.json().items.find((m: { id: string }) => m.id === requestId)).toBeUndefined();
   });
 
+  it('revoking the agent also cancels an APPROVED-but-unfetched request and zeroes its sealed code', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'a', kind: 'totp' })).json().requestId;
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200); // approved, sealedCode set
+
+    await app.inject({ method: 'POST', url: `/v1/agents/${s.agentId}/revoke`, headers: auth(s.token) });
+
+    const [row] = await db
+      .select({ status: schema.mfaRequests.status, sealed: schema.mfaRequests.sealedCode })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(row!.status).toBe('revoked');
+    expect(row!.sealed).toBeNull(); // the sealed-but-unfetched code is zeroed
+  });
+
   it('a stranger cannot approve another owner\'s MFA request (404)', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'x', kind: 'totp' })).json().requestId;

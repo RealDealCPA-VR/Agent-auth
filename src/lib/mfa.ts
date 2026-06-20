@@ -430,10 +430,11 @@ export async function listPendingMfaFor(
 }
 
 /**
- * Cancel all pending MFA requests for an agent (called on agent revocation —
- * fail-closed). Returns the cancelled rows so the caller can audit each one. Pass
- * `exec` (the revoke transaction) so the cancel commits atomically with the agent
- * deactivation and its audit.
+ * Cancel an agent's open MFA requests on revocation — fail-closed. Cancels BOTH
+ * pending AND already-approved-but-unfetched rows, so a sealed-but-unconsumed code
+ * is zeroed at revoke time (the MFA layer is fail-closed independent of the auth
+ * check, which also already rejects the revoked agent). Returns the cancelled rows
+ * so the caller can audit. Pass `exec` (the revoke transaction) for atomicity.
  */
 export async function revokePendingMfaForAgent(
   agentId: string,
@@ -441,7 +442,12 @@ export async function revokePendingMfaForAgent(
 ): Promise<typeof schema.mfaRequests.$inferSelect[]> {
   return exec
     .update(schema.mfaRequests)
-    .set({ status: 'revoked', decidedAt: new Date() })
-    .where(and(eq(schema.mfaRequests.agentId, agentId), eq(schema.mfaRequests.status, 'pending')))
+    .set({ status: 'revoked', sealedCode: null, decidedAt: new Date() })
+    .where(
+      and(
+        eq(schema.mfaRequests.agentId, agentId),
+        or(eq(schema.mfaRequests.status, 'pending'), eq(schema.mfaRequests.status, 'approved')),
+      ),
+    )
     .returning();
 }

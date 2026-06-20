@@ -373,6 +373,12 @@ export interface BrowserPage {
   context?: () => BrowserContextLike;
   /** Puppeteer: set cookies directly on the page. */
   setCookie?: (...cookies: PlanCookie[]) => Promise<unknown>;
+  /** Puppeteer: read the page's cookies (used by force-logout). */
+  cookies?: () => Promise<Array<{ name: string; domain?: string; path?: string; url?: string }>>;
+  /** Puppeteer: delete cookies (force-logout a revoked agent's session). */
+  deleteCookie?: (
+    ...cookies: Array<{ name: string; domain?: string; path?: string; url?: string }>
+  ) => Promise<unknown>;
   /** Puppeteer (and Playwright fallback): set extra HTTP headers. */
   setExtraHTTPHeaders?: (headers: Record<string, string>) => Promise<unknown>;
   /** Fill an input (Playwright; also present on recent Puppeteer). */
@@ -722,7 +728,13 @@ function hostAllowed(host: string, allowed: string[]): boolean {
 async function forceLogout(page: BrowserPage): Promise<void> {
   try {
     const ctx = page.context?.();
-    if (ctx?.clearCookies) await ctx.clearCookies();
+    if (ctx?.clearCookies) {
+      await ctx.clearCookies(); // Playwright
+    } else if (page.cookies && page.deleteCookie) {
+      // Puppeteer: no context().clearCookies — delete the page's cookies directly.
+      const cs = await page.cookies();
+      if (Array.isArray(cs) && cs.length > 0) await page.deleteCookie(...cs);
+    }
   } catch {
     /* ignore */
   }
