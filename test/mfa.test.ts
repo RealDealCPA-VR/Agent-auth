@@ -238,6 +238,24 @@ describe('MFA approval-queue handoff', () => {
     if (!res.ok) expect(res.reason).toBe('not_found');
   });
 
+  it('createMfaRequest refuses an agent that does not belong to the passport (self-scope DiD)', async () => {
+    const s = await setup();
+    // A second principal + passport + agent; that agent is foreign to s.passportId.
+    const other = await registerAndLogin(app);
+    const otherPassportId = await createPassport(app, other.token);
+    const otherAgent = await issueAgent(app, other.token, otherPassportId, ['vault:use', 'target:app.example.com'], 'x');
+    // Pair this passport's credential with a FOREIGN agent — must self-scope and reject.
+    const res = await createMfaRequest({
+      passportId: s.passportId,
+      credentialId: s.credId,
+      agentId: otherAgent.id,
+      challengeId: 'forge-agent',
+      kind: 'totp',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe('not_found');
+  });
+
   it('a stranger cannot approve another owner\'s MFA request (404)', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'x', kind: 'totp' })).json().requestId;

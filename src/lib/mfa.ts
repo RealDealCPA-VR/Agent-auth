@@ -82,6 +82,16 @@ export async function createMfaRequest(args: {
     .limit(1);
   if (!cred) return { ok: false, reason: 'not_found' };
 
+  // Same self-scope for the agent: the agentId is the row's agent binding, audit
+  // actor, rate-limit key, and later gates fetchMfaCode — so verify it belongs to
+  // this passport rather than trusting the caller (mirrors the credential check).
+  const [ag] = await db
+    .select({ id: schema.agents.id })
+    .from(schema.agents)
+    .where(and(eq(schema.agents.id, args.agentId), eq(schema.agents.passportId, args.passportId)))
+    .limit(1);
+  if (!ag) return { ok: false, reason: 'not_found' };
+
   const scope = and(
     eq(schema.mfaRequests.agentId, args.agentId),
     eq(schema.mfaRequests.credentialId, args.credentialId),
