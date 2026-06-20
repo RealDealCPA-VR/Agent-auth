@@ -585,6 +585,17 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       if (!hasScope(agent.scopes, 'vault:use'))
         return fail(req, reply, 403, 'forbidden', 'missing scope: vault:use');
 
+      // Re-check target scope at DELIVERY time (mirrors the create route and every
+      // other secret-bearing path: /use, /proxy, /browser-login). A scope narrowing
+      // AFTER the request was opened — the target:<host> glob removed while vault:use
+      // is retained — must be honored before an approved one-time code is returned,
+      // not just at request time. (Full revocation already closes it; this covers the
+      // narrowing-of-privilege case.)
+      const meta = await getCredentialMeta(agent.passportId, id);
+      if (!meta) return fail(req, reply, 404, 'not_found', 'mfa request not found');
+      if (!allowsTarget(agent.scopes, meta.target))
+        return fail(req, reply, 403, 'forbidden', `agent not scoped for target: ${meta.target}`);
+
       const res = await fetchMfaCode(agent.passportId, id, agent.agentId, requestId, { ip: req.ip });
       switch (res.status) {
         case 'not_found':

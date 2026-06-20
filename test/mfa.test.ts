@@ -197,6 +197,30 @@ describe('MFA approval-queue handoff', () => {
     expect(row!.sealed).toBeNull(); // the sealed-but-unfetched code is zeroed
   });
 
+  it('poll re-checks target scope at delivery: narrowing the target glob mid-flight withholds the code (403)', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'tn', kind: 'totp' })).json().requestId;
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200);
+
+    // Narrow the agent's scopes AFTER approval: swap the target glob for a
+    // non-matching one (absence of any target: scope means unrestricted, so we must
+    // pin it to a DIFFERENT host to actually narrow), keeping vault:use.
+    await db
+      .update(schema.agents)
+      .set({ scopes: ['vault:use', 'target:other.example.com'] })
+      .where(eq(schema.agents.id, s.agentId));
+
+    // The approved code is now withheld — the delivery-time target check fails closed.
+    expect((await pollMfa(s.agentKey, s.credId, requestId)).statusCode).toBe(403);
+    // The row is still approved (not consumed), so re-widening the scope could fetch it.
+    const [row] = await db
+      .select({ status: schema.mfaRequests.status })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(row!.status).toBe('approved');
+  });
+
   it('polling with a malformed (non-UUID) credential id returns a clean 404, not a 500', async () => {
     const s = await setup();
     // A non-UUID :id would hit the uuid column and throw 22P02 -> 500 without the guard.
