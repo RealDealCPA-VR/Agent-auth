@@ -71,6 +71,9 @@ export async function buildServer(): Promise<FastifyInstance> {
           'req.headers.cookie',
           'req.body.password',
           'req.body.secret',
+          // The human approve route (POST /v1/mfa/:id/approve) carries the one-time
+          // code in req.body.code; redact it to the same standard as password/secret.
+          'req.body.code',
           'res.body.secret',
           'res.body.apiKey',
           'res.body.token',
