@@ -105,8 +105,12 @@ def _summary_base(plan: Mapping[str, Any]) -> Dict[str, Any]:
 
 def _apply_cookie(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     cookies: List[Mapping[str, Any]] = list(plan.get("cookies") or [])
-    page.context.add_cookies(cookies)
+    # Validate the destination BEFORE planting any secret state: an off-allowlist
+    # url must never leave session cookies in the persistent context (a later caller
+    # nav to that host would otherwise transmit them). Fail closed first, exactly as
+    # the localStorage branch does.
     _assert_nav_allowed(plan["url"], plan.get("allowedDomains"))
+    page.context.add_cookies(cookies)
     page.goto(plan["url"])
     summary = _summary_base(plan)
     summary["authenticated"] = True
@@ -117,8 +121,11 @@ def _apply_cookie(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
 
 def _apply_header(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     headers: Mapping[str, str] = plan.get("headers") or {}
-    page.context.set_extra_http_headers(dict(headers))
+    # Validate the destination BEFORE planting any secret state: set_extra_http_headers
+    # is context-wide and NOT domain-scoped, so an off-allowlist url must never plant an
+    # Authorization header a later caller nav would leak. Fail closed first.
     _assert_nav_allowed(plan["url"], plan.get("allowedDomains"))
+    page.context.set_extra_http_headers(dict(headers))
     page.goto(plan["url"])
     summary = _summary_base(plan)
     summary["authenticated"] = True

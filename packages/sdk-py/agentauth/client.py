@@ -714,6 +714,11 @@ class AgentAuthClient(_BaseClient):
             if status == "denied":
                 return {"resolved": False, "status": "denied"}
             if status == "revoked":
+                # Agent revoked mid-flow (same condition the 401 path guards, reached
+                # via a race where the GET still authenticates but reads a revoked MFA
+                # row). browser_login already planted session cookies — force-logout
+                # before surfacing so the session can't outlive the revoked agent.
+                _force_logout(page)
                 return {"resolved": False, "status": "revoked"}
             if status == "approved":
                 code = res.get("code")

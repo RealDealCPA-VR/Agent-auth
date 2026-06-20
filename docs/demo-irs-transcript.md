@@ -7,8 +7,9 @@ model's context.**
 
 > The flow is the point, not the site. This demo ships a **mock** IRS e-Services
 > site (`examples/mfa-demo/site/`) so it runs anywhere. Swap in a real account
-> once you've watched it work — but read the hardening section of the README
-> first (`Phase 4`), and never point it at a real client account before that.
+> once you've watched it work — but read the **"Hardened on every layer"**
+> section of the README first, and never point it at a real client account
+> before that.
 
 ## What the audience sees (90s, no narration needed)
 

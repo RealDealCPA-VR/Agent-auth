@@ -140,6 +140,28 @@ describe('MFA approval-queue handoff', () => {
     expect((await pollMfa(s.agentKey, s.credId, requestId)).json().status).toBe('denied');
   });
 
+  it('denying an already-EXPIRED (unflipped) request is rejected (409) so it resolves as expired, not denied', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'de', kind: 'sms' })).json().requestId;
+    // Force the TTL into the past WITHOUT flipping status (no poll yet): row is still 'pending'.
+    await db
+      .update(schema.mfaRequests)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.mfaRequests.id, requestId));
+
+    // Deny must refuse (mirrors approve's TTL guard) rather than recording mfa.denied.
+    expect((await denyMfa(s.token, requestId)).statusCode).toBe(409);
+    // The agent poll then resolves it as expired, the truthful terminal state.
+    const poll = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(poll.statusCode).toBe(410);
+    expect(poll.json().error.code).toBe('expired');
+
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(s.token) });
+    const actions = (trail.json().items as Array<{ action: string }>).map((i) => i.action);
+    expect(actions).not.toContain('mfa.denied');
+    expect(actions).toContain('mfa.expired');
+  });
+
   it('revoking the agent cancels its pending MFA (status revoked) and audits mfa.revoked', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'r', kind: 'totp' })).json().requestId;
@@ -173,6 +195,29 @@ describe('MFA approval-queue handoff', () => {
       .limit(1);
     expect(row!.status).toBe('revoked');
     expect(row!.sealed).toBeNull(); // the sealed-but-unfetched code is zeroed
+  });
+
+  it('lazy-expiring an APPROVED-but-unfetched request also zeroes its sealed code at rest', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'ae', kind: 'totp' })).json().requestId;
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200); // approved, sealedCode set
+    // Drive the TTL past without fetching; the next agent poll lazily flips to expired.
+    await db
+      .update(schema.mfaRequests)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.mfaRequests.id, requestId));
+
+    const poll = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(poll.statusCode).toBe(410);
+    expect(poll.json().error.code).toBe('expired');
+
+    const [row] = await db
+      .select({ status: schema.mfaRequests.status, sealed: schema.mfaRequests.sealedCode })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(row!.status).toBe('expired');
+    expect(row!.sealed).toBeNull(); // a one-time code that can no longer be delivered is destroyed
   });
 
   it('a stranger cannot approve another owner\'s MFA request (404)', async () => {

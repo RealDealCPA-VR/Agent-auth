@@ -1167,6 +1167,18 @@ describe('AgentAuthClient.resolveMfa', () => {
     expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
   });
 
+  it('force-logs-out when a poll returns status revoked (session must not outlive a revoked agent)', async () => {
+    stubFetch([{ body: { requestId: 'r', status: 'pending' } }, { body: { status: 'revoked' } }]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, { inputSelector: '#otp', sleep: noSleep });
+    expect(res.resolved).toBe(false);
+    expect(res.status).toBe('revoked');
+    expect(events.some((e) => e.kind === 'clearCookies')).toBe(true);
+    expect(events.some((e) => e.kind === 'goto' && e.arg === 'about:blank')).toBe(true);
+    expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
+  });
+
   it('maps a 410 poll (expired/consumed) to expired', async () => {
     stubFetch([
       { body: { requestId: 'r', status: 'pending' } },
@@ -1282,6 +1294,35 @@ describe('browser hardening (Phase 4)', () => {
       allowedDomains: ['app.example.com'],
     };
     await expect(applyBrowserLogin(makeFakePage().page, lsPlan)).rejects.toThrow(/allowedDomains/);
+  });
+
+  it('cookie/header modes reject an off-list url BEFORE planting any secret state', async () => {
+    // The allowlist guard must run before addCookies/setExtraHTTPHeaders, otherwise
+    // the secret stays in the persistent context and a later caller nav to that host
+    // would transmit it — the exact host-pinning bypass the allowlist prevents.
+    const cookiePlan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'app.example.com',
+      url: 'https://evil.example.org/',
+      cookies: [{ name: 's', value: 'SECRET', path: '/' }],
+      allowedDomains: ['app.example.com'],
+    };
+    const cookieFake = makeFakePage();
+    await expect(applyBrowserLogin(cookieFake.page, cookiePlan)).rejects.toThrow(/allowedDomains/);
+    expect(cookieFake.events.some((e) => e.kind === 'addCookies')).toBe(false);
+    expect(cookieFake.events.some((e) => e.kind === 'goto')).toBe(false);
+
+    const headerPlan: BrowserLoginPlan = {
+      mode: 'header',
+      target: 'app.example.com',
+      url: 'https://evil.example.org/',
+      headers: { Authorization: 'Bearer SECRET' },
+      allowedDomains: ['app.example.com'],
+    };
+    const headerFake = makeFakePage();
+    await expect(applyBrowserLogin(headerFake.page, headerPlan)).rejects.toThrow(/allowedDomains/);
+    expect(headerFake.events.some((e) => e.kind === 'setExtraHTTPHeaders')).toBe(false);
+    expect(headerFake.events.some((e) => e.kind === 'goto')).toBe(false);
   });
 
   it('browserLogin force-logs-out the browser when the agent is revoked (401)', async () => {

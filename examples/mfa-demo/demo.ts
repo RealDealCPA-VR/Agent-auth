@@ -130,6 +130,10 @@ async function main(): Promise<void> {
     await approveAsHuman(session.token, summary.mfa.challengeId, '123456');
     const r = await resolving;
     console.log('MFA resolved →', JSON.stringify(r)); // non-secret; no code
+    // The mock advances via a synchronous client-side `location.href='dashboard.html'`,
+    // which `networkidle` (resolveMfa's settle) may not have committed yet. Wait for the
+    // target URL explicitly so the assertion below isn't a navigation race / flake.
+    await page.waitForURL('**/dashboard.html').catch(() => {});
     // Fail loudly if the code was not actually applied / the flow didn't complete.
     if (!r.resolved || !page.url().includes('dashboard')) {
       throw new Error(`MFA flow did not complete: ${JSON.stringify(r)} url=${page.url()}`);

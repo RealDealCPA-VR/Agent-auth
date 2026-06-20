@@ -802,6 +802,11 @@ export async function applyBrowserLogin(
 ): Promise<BrowserLoginSummary> {
   switch (plan.mode) {
     case 'cookie': {
+      // Validate the destination BEFORE planting any secret state. An off-allowlist
+      // url must never leave session cookies in the persistent browser context (a
+      // later caller nav to that host would otherwise transmit them) — fail closed
+      // first, exactly as the localStorage branch does.
+      assertNavAllowed(plan.url, plan.allowedDomains);
       const ctx = page.context?.();
       if (ctx?.addCookies) {
         // Playwright: cookies are set on the browsing context.
@@ -814,7 +819,6 @@ export async function applyBrowserLogin(
           'AgentAuth SDK: page supports neither context().addCookies (Playwright) nor setCookie (Puppeteer)',
         );
       }
-      assertNavAllowed(plan.url, plan.allowedDomains);
       await page.goto(plan.url);
       return {
         mode: plan.mode,
@@ -826,6 +830,10 @@ export async function applyBrowserLogin(
     }
 
     case 'header': {
+      // Validate the destination BEFORE planting any secret state. setExtraHTTPHeaders
+      // is context-wide and NOT domain-scoped, so an off-allowlist url must never plant
+      // an Authorization header that a later caller nav would leak — fail closed first.
+      assertNavAllowed(plan.url, plan.allowedDomains);
       const ctx = page.context?.();
       if (ctx?.setExtraHTTPHeaders) {
         // Playwright: headers are set on the browsing context.
@@ -838,7 +846,6 @@ export async function applyBrowserLogin(
           'AgentAuth SDK: page supports neither context().setExtraHTTPHeaders nor setExtraHTTPHeaders',
         );
       }
-      assertNavAllowed(plan.url, plan.allowedDomains);
       await page.goto(plan.url);
       return {
         mode: plan.mode,
@@ -1200,7 +1207,14 @@ export class AgentAuthClient extends Transport {
         throw err;
       }
       if (res.status === 'denied') return { resolved: false, status: 'denied' };
-      if (res.status === 'revoked') return { resolved: false, status: 'revoked' };
+      if (res.status === 'revoked') {
+        // The agent was revoked mid-flow (same condition the 401 path guards, reached
+        // via a race where the GET still authenticates but reads a revoked MFA row).
+        // browserLogin already planted session cookies, so force-logout before
+        // surfacing — the session must not outlive the revoked agent.
+        await forceLogout(page);
+        return { resolved: false, status: 'revoked' };
+      }
       if (res.status === 'approved') {
         const inputSelector = opts.inputSelector ?? challenge.inputSelector;
         const submitSelector = opts.submitSelector ?? challenge.submitSelector;

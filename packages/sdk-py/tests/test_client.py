@@ -1197,8 +1197,13 @@ def test_cookie_mode_enforces_allowed_domains():
     plan = {"mode": "cookie", "target": "app.example.com", "url": "https://evil.example.org/",
             "cookies": [{"name": "s", "value": "SECRET", "path": "/"}],
             "allowedDomains": ["app.example.com"]}
+    page = FakePage()
     with pytest.raises(ValueError, match="allowedDomains"):
-        apply_browser_login(FakePage(), plan)
+        apply_browser_login(page, plan)
+    # The allowlist is checked BEFORE any secret state is planted: an off-list url
+    # must leave no cookies in the context and no navigation.
+    assert page.context.added_cookies is None
+    assert ("goto", "https://evil.example.org/") not in page.calls
 
 
 def test_local_storage_mode_enforces_allowed_domains():
@@ -1216,8 +1221,31 @@ def test_header_mode_enforces_allowed_domains():
 
     plan = {"mode": "header", "target": "app.example.com", "url": "https://evil.example.org/",
             "headers": {"Authorization": "Bearer SECRET"}, "allowedDomains": ["app.example.com"]}
+    page = FakePage()
     with pytest.raises(ValueError, match="allowedDomains"):
-        apply_browser_login(FakePage(), plan)
+        apply_browser_login(page, plan)
+    # The allowlist is checked BEFORE the context-wide Authorization header is planted:
+    # an off-list url must leave no extra headers and trigger no navigation.
+    assert page.context.extra_headers is None
+    assert ("goto", "https://evil.example.org/") not in page.calls
+
+
+def test_resolve_mfa_revoked_forces_logout():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "revoked"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    res = client.resolve_mfa(page, cid, _MFA_CHALLENGE, input_selector="#otp", sleep=lambda *_: None)
+    assert res["resolved"] is False
+    assert res["status"] == "revoked"
+    # A revoked poll must force-logout so the session can't outlive the revoked agent.
+    assert page.context.cookies_cleared is True
+    assert ("goto", "about:blank") in page.calls
 
 
 def test_browser_login_force_logout_on_revoked_401():

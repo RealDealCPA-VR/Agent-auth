@@ -192,7 +192,11 @@ export async function fetchMfaCode(
       await db.transaction(async (tx) => {
         const flipped = await tx
           .update(schema.mfaRequests)
-          .set({ status: 'expired' })
+          // Zero the sealed code alongside the status flip: once a row can no longer
+          // deliver its one-time code, that secret must not linger at rest (mirrors
+          // the revoke path). Fail-closed already (status='expired' is checked before
+          // any unseal), so this is at-rest hygiene / defense-in-depth.
+          .set({ status: 'expired', sealedCode: null })
           .where(
             and(
               eq(schema.mfaRequests.id, row.id),
@@ -387,12 +391,25 @@ export async function denyMfaRequest(
     .limit(1);
   if (!row) return { ok: false, reason: 'not_found' };
   if (!(await mayApprove(row, principalId))) return { ok: false, reason: 'forbidden' };
-  if (row.status !== 'pending') return { ok: false, reason: 'not_pending' };
+  // Mirror approve's TTL guard: an expired-but-not-yet-flipped pending row must
+  // resolve as expired (via the agent poll), never as 'denied'. Without this an
+  // owner could record a misleading mfa.denied for a request that had already
+  // lapsed — the approve/deny asymmetry is also an easy future-change hazard.
+  if (row.status !== 'pending' || row.expiresAt.getTime() <= Date.now())
+    return { ok: false, reason: 'not_pending' };
   return db.transaction(async (tx): Promise<DecideMfaResult> => {
     const [updated] = await tx
       .update(schema.mfaRequests)
       .set({ status: 'denied', decidedAt: new Date(), decidedBy: principalId })
-      .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')))
+      // Re-check TTL in the guard too, so a row that lapses between the pre-read
+      // and the UPDATE is not flipped to 'denied' after it should have expired.
+      .where(
+        and(
+          eq(schema.mfaRequests.id, row.id),
+          eq(schema.mfaRequests.status, 'pending'),
+          gt(schema.mfaRequests.expiresAt, new Date()),
+        ),
+      )
       .returning();
     if (!updated) return { ok: false, reason: 'not_pending' };
     await audit(
