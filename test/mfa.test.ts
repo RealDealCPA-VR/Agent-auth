@@ -197,6 +197,18 @@ describe('MFA approval-queue handoff', () => {
     expect(row!.sealed).toBeNull(); // the sealed-but-unfetched code is zeroed
   });
 
+  it('polling with a malformed (non-UUID) credential id returns a clean 404, not a 500', async () => {
+    const s = await setup();
+    // A non-UUID :id would hit the uuid column and throw 22P02 -> 500 without the guard.
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/vault/credentials/not-a-uuid/mfa/request/11111111-1111-4111-8111-111111111111`,
+      headers: auth(s.agentKey),
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('not_found');
+  });
+
   it('consuming a code zeroes the sealed code at rest (uniform destroy-on-terminal invariant)', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'cz', kind: 'totp' })).json().requestId;

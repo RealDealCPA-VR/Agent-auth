@@ -186,7 +186,11 @@ export async function fetchMfaCode(
   requestId: string,
   opts: { ip?: string } = {},
 ): Promise<FetchMfaResult> {
-  if (!UUID_RE.test(requestId)) return { status: 'not_found' };
+  // UUID-guard both agent-controlled ids: a malformed credentialId (the route :id)
+  // or requestId would otherwise hit the uuid columns and throw 22P02 -> generic 500.
+  // Resolve as a clean 404 instead, matching the rest of the surface (getCredentialMeta,
+  // approvals, etc. all guard with UUID_RE for exactly this reason).
+  if (!UUID_RE.test(requestId) || !UUID_RE.test(credentialId)) return { status: 'not_found' };
   const [row] = await db
     .select()
     .from(schema.mfaRequests)
