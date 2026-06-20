@@ -66,8 +66,16 @@ export async function authenticateAgent(apiKey: string): Promise<AuthResult> {
 
 // --- Scopes -----------------------------------------------------------------
 
-/** The complete set of grantable non-target scopes. Anything else is rejected. */
-export const ALLOWED_SCOPES = ['vault:read', 'vault:use', 'vault:proxy'] as const;
+/**
+ * The complete set of grantable non-target scopes. Anything else is rejected.
+ *
+ * `vault:browser:raw` is the off-by-default opt-in for the raw browser-login plan
+ * path (SDK getBrowserLoginPlan / POST /browser-login?raw=true), which returns the
+ * secret-bearing plan to the caller instead of confining it in the SDK helper. It
+ * is required IN ADDITION to vault:use for that path; the safe browserLogin path
+ * needs only vault:use.
+ */
+export const ALLOWED_SCOPES = ['vault:read', 'vault:use', 'vault:proxy', 'vault:browser:raw'] as const;
 export type AllowedScope = (typeof ALLOWED_SCOPES)[number];
 
 const HOST_RE =

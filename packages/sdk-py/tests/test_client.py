@@ -776,6 +776,8 @@ def test_get_browser_login_plan_by_id_hits_endpoint_directly():
         calls.append(f"{request.method} {request.url.path}")
         assert request.url.path == f"/v1/vault/credentials/{cid}/browser-login"
         assert request.method == "POST"
+        # The liability path requests the raw endpoint (vault:browser:raw gated).
+        assert request.url.params.get("raw") == "true"
         return ok(plan)
 
     client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
@@ -882,6 +884,8 @@ def _make_plan_client(plan: Dict[str, Any]) -> AgentAuthClient:
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == f"/v1/vault/credentials/{cid}/browser-login"
+        # browser_login is the SAFE path: it must NOT request the raw endpoint.
+        assert request.url.params.get("raw") is None
         return ok(plan)
 
     return AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))

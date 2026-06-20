@@ -165,10 +165,23 @@ console.log('logged in via', summary.mode);                   // e.g. "cookie"
 await page.goto('https://app.example.com/dashboard');         // now authenticated
 ```
 
-The SDK surface is `browserLogin(page, target)` and `getBrowserLoginPlan(target)`
-(Python: `browser_login` / `get_browser_login_plan`; MCP tool: `browser_login`).
-Prefer `browserLogin` — it fetches the plan and confines the secret in one step;
-`getBrowserLoginPlan` is the secret-bearing escape hatch for advanced callers.
+The SDK surface is `browserLogin(page, target)` — the **safe path**, needing only
+**`vault:use`** — and `getBrowserLoginPlan(target)` — the **liability path**
+(Python: `browser_login` / `get_browser_login_plan`).
+
+**`getBrowserLoginPlan` is the liability path.** It returns the plan with the
+secret **in plaintext to your process**. It requires the **`vault:browser:raw`**
+scope, which is **off by default** and must be explicitly granted per agent (a
+checkbox on the mint-agent page) — without it the call is `403 missing_scope`. If
+you enable it, treat the return value like a decrypted password: do not log it, do
+not pass it to an LLM, do not persist it. AgentAuth cannot enforce this once the
+plan leaves the server — the trust boundary moves to your process. **Prefer
+`browserLogin`** unless you have a concrete reason you can't.
+
+> Browser-login is intentionally an SDK feature, **not** an MCP tool: a stdio MCP
+> bridge has no browser page to apply the plan to, so exposing it there would only
+> surface secret values to the model. MCP agents authenticate with
+> `use_credential` or `proxy_request`.
 
 ### 🛡️ Hardened on every layer
 

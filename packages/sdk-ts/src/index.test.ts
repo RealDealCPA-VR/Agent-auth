@@ -782,7 +782,8 @@ describe('AgentAuthClient.getBrowserLoginPlan', () => {
     expect(result.mode).toBe('header');
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe('POST');
-    expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${PLAN_UUID}/browser-login`);
+    // The liability path hits the raw endpoint (?raw=true → vault:browser:raw).
+    expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${PLAN_UUID}/browser-login?raw=true`);
     expect(calls[0]?.headers.authorization).toBe(`Bearer ${API_KEY}`);
   });
 
@@ -805,7 +806,7 @@ describe('AgentAuthClient.getBrowserLoginPlan', () => {
     expect(result.mode).toBe('cookie');
     expect(calls).toHaveLength(2);
     expect(calls[0]?.url).toContain('/v1/vault/credentials?limit=200');
-    expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/browser-login`);
+    expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/browser-login?raw=true`);
   });
 
   it('throws ApprovalPendingError on a 202', async () => {

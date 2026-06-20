@@ -573,42 +573,42 @@ class AgentAuthClient(_BaseClient):
         )
 
     def get_browser_login_plan(self, id_or_target: str, *, limit: int = 200) -> JSON:
-        """Fetch a browser-login *plan* for a credential, by id **or** target.
+        """**The liability path.** Fetch the raw browser-login *plan* for a credential.
 
-        ``id_or_target`` is resolved exactly like :meth:`use_credential`: a UUID
-        is used as the credential **id** directly; anything else is resolved as a
-        **target** against the agent's visible credentials.
+        The returned plan **carries the secret in plaintext to your process**. Treat
+        it like a decrypted password: do not log it, do not pass it to an LLM, do not
+        persist it. AgentAuth cannot enforce this once it leaves the server — the
+        trust boundary moves to your process. **Prefer :meth:`browser_login`** (which
+        applies the plan to a page and confines the secret) unless you have a concrete
+        reason you cannot.
 
-        The plan **carries secret material** (same trust level as
-        :meth:`use_credential`) and is keyed on ``mode``::
+        Requires the **`vault:browser:raw`** scope (off by default) IN ADDITION to
+        ``vault:use``; without it the call is ``403 missing_scope``. ``id_or_target``
+        is resolved exactly like :meth:`use_credential`. The plan is keyed on ``mode``::
 
             cookie:       {"mode","target","url","cookies":[...]}
             header:       {"mode","target","url","headers":{...}}
             localStorage: {"mode","target","origin","url","items":{...}}
             form:         {"mode","target","url","actions":[...],"successUrlIncludes"?}
 
-        The agent key needs the **`vault:use`** scope and the target must be
-        scoped (like :meth:`use_credential`).
-
         Raises:
             AgentAuthError: for the standard error envelope (``403`` missing
-                ``vault:use`` / target not scoped, ``404`` not found, ``410``
-                expired, ``422`` no/invalid browser spec — ``no_browser_spec`` /
-                ``bad_browser_spec`` / ``missing_username``, ``429`` use-limit
-                reached, ...).
+                ``vault:browser:raw`` / ``vault:use`` / target not scoped, ``404``
+                not found, ``410`` expired, ``422`` no/invalid browser spec, ``429``
+                use-limit reached, ...).
             ApprovalPendingError: ``202`` when human approval is required.
         """
         cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
-        return self._browser_login_by_id(cred_id)
+        return self._browser_login_by_id(cred_id, raw=True)
 
     def browser_login(self, page: Any, id_or_target: str, *, limit: int = 200) -> JSON:
         """Log a Playwright **sync** ``page`` into a credential's target.
 
-        Fetches the plan via :meth:`get_browser_login_plan` and applies it to the
-        duck-typed ``page`` (see :mod:`agentauth.browser`). Returns a **non-secret
-        summary** ``{mode, target, url, ...names/counts}`` — never a cookie/header/
-        storage/form value. The actual secret material is applied to the page and
-        is not echoed back.
+        The SAFE path: fetches the plan (NON-raw — needs only ``vault:use``, NOT
+        ``vault:browser:raw``) and applies it to the duck-typed ``page`` (see
+        :mod:`agentauth.browser`). Returns a **non-secret summary** ``{mode, target,
+        url, ...names/counts}`` — never a cookie/header/storage/form value. The
+        actual secret material is applied to the page and is not echoed back.
 
         ``page`` is duck-typed: only the methods the plan needs are called
         (``page.context.add_cookies`` / ``page.context.set_extra_http_headers`` /
@@ -621,7 +621,11 @@ class AgentAuthClient(_BaseClient):
         # (duck-typed) Playwright assumptions; mirrors browser.py's import policy.
         from .browser import apply_browser_login
 
-        plan = self.get_browser_login_plan(id_or_target, limit=limit)
+        # The SAFE path: fetch the plan NON-raw (vault:use only — no
+        # vault:browser:raw needed), apply it to the page, and return only a
+        # non-secret summary. The secret never leaves this method.
+        cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
+        plan = self._browser_login_by_id(cred_id, raw=False)
         return apply_browser_login(page, plan)
 
     # -- internals ---------------------------------------------------------
@@ -671,9 +675,12 @@ class AgentAuthClient(_BaseClient):
             "POST", f"/vault/credentials/{credential_id}/use"
         )
 
-    def _browser_login_by_id(self, credential_id: str) -> JSON:
+    def _browser_login_by_id(self, credential_id: str, *, raw: bool = False) -> JSON:
+        # raw=True hits the liability endpoint (?raw=true), gated by the
+        # vault:browser:raw scope; raw=False is the SDK-applied path (vault:use).
+        params = {"raw": "true"} if raw else None
         return self._request(
-            "POST", f"/vault/credentials/{credential_id}/browser-login"
+            "POST", f"/vault/credentials/{credential_id}/browser-login", params=params
         )
 
     def _resolve_target(self, target: str, *, limit: int) -> Optional[str]:

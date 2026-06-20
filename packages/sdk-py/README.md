@@ -203,13 +203,19 @@ with sync_playwright() as p:
     # summary -> {"mode": "cookie", "target": "github.com", "url": ..., "cookie_names": [...]}
     # the page is now logged in; drive it as usual.
 
-# Or fetch the plan yourself (it carries secrets) and apply it your own way:
+# LIABILITY PATH — returns the secret in plaintext to your process.
+# Treat it like a decrypted password: do not log, pass to an LLM, or persist it.
 plan = client.get_browser_login_plan("github.com")
 ```
 
-The agent key needs the **`vault:use`** scope and the target must be scoped. A
-`202` (approval required) raises `ApprovalPendingError`. Playwright is **not** a
+`browser_login` is the **safe path** and needs only **`vault:use`**. A `202`
+(approval required) raises `ApprovalPendingError`. Playwright is **not** a
 dependency of the SDK — the `page` is duck-typed.
+
+> **`get_browser_login_plan` is the liability path.** It requires the
+> **`vault:browser:raw`** scope (off by default) in addition to `vault:use`;
+> without it the call is `403 missing_scope`. Prefer `browser_login`, which applies
+> the plan to a page and never returns the secret to you.
 
 ### Management extras (mTLS + OAuth + approvals)
 

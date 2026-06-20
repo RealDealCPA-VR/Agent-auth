@@ -815,29 +815,44 @@ export class AgentAuthClient extends Transport {
   }
 
   /**
-   * Fetch the {@link BrowserLoginPlan} for a credential — the recipe for logging
-   * a browser into the credential's target (cookies, headers, localStorage, or a
-   * form-fill sequence). The returned plan **carries secret material** at the same
-   * trust level as {@link useCredential}; apply it immediately and never log it.
+   * **The liability path.** Fetch the raw {@link BrowserLoginPlan} for a credential
+   * — the recipe for logging a browser into the credential's target (cookies,
+   * headers, localStorage, or a form-fill sequence). The returned plan **carries
+   * the secret in plaintext to your process**. Treat the return like a decrypted
+   * password: do not log it, do not pass it to an LLM, do not persist it. AgentAuth
+   * cannot enforce this once it leaves the server — the trust boundary moves to
+   * your process. **Prefer {@link browserLogin}** (which confines the secret) unless
+   * you have a concrete reason you cannot use the page-applying helper.
    *
-   * The credential is identified by **id** (a UUID) or by **target** (any other
-   * string), resolved exactly like {@link useCredential} / {@link proxy}. Requires
-   * the `vault:use` scope; target-scoping applies as for `/use`.
+   * Requires the **`vault:browser:raw`** scope (off by default) IN ADDITION to
+   * `vault:use`; without it the call is `403 missing_scope`. The credential is
+   * identified by **id** (a UUID) or by **target**, resolved like {@link useCredential}.
    *
    * @param idOrTarget A credential UUID, or a target host string to resolve.
    * @throws {ApprovalPendingError} 202 when the credential's policy requires human approval.
-   * @throws {AgentAuthError} 403 (scope/target), 404 (no match), 410 (expired/window),
-   *   422 (no/invalid browser spec), 429 (use limit), 502 (oauth refresh failed),
-   *   plus the usual 401/503.
+   * @throws {AgentAuthError} 403 (missing vault:browser:raw / scope / target), 404
+   *   (no match), 410 (expired/window), 422 (no/invalid browser spec), 429 (use
+   *   limit), 502 (oauth refresh failed), plus the usual 401/503.
    */
   async getBrowserLoginPlan(idOrTarget: string): Promise<BrowserLoginPlan> {
     if (!idOrTarget) {
       throw new TypeError('AgentAuth SDK: getBrowserLoginPlan() requires an id or target');
     }
+    // The LIABILITY path: returns the secret-bearing plan to YOUR process. It hits
+    // the raw endpoint, which requires the `vault:browser:raw` scope (off by
+    // default) IN ADDITION to vault:use. Treat the return like a decrypted
+    // password — do not log it, do not pass it to an LLM, do not persist it.
+    return this.fetchBrowserPlan(idOrTarget, true);
+  }
+
+  /** Fetch a browser-login plan. raw=true → vault:browser:raw gated (caller holds
+   * the secret); raw=false → vault:use only (the SDK applies + confines it). */
+  private async fetchBrowserPlan(idOrTarget: string, raw: boolean): Promise<BrowserLoginPlan> {
     const id = isUuid(idOrTarget) ? idOrTarget : await this.resolveTarget(idOrTarget);
     return this.request<BrowserLoginPlan>({
       method: 'POST',
       path: `/v1/vault/credentials/${encodeURIComponent(id)}/browser-login`,
+      ...(raw ? { query: { raw: 'true' } } : {}),
       authorization: this.authHeader,
     });
   }
@@ -858,7 +873,13 @@ export class AgentAuthClient extends Transport {
    * @throws {ApprovalPendingError} / {@link AgentAuthError} as {@link getBrowserLoginPlan}.
    */
   async browserLogin(page: BrowserPage, idOrTarget: string): Promise<BrowserLoginSummary> {
-    const plan = await this.getBrowserLoginPlan(idOrTarget);
+    if (!idOrTarget) {
+      throw new TypeError('AgentAuth SDK: browserLogin() requires an id or target');
+    }
+    // The SAFE path: needs only vault:use. The plan is fetched non-raw, applied to
+    // the page, and only a non-secret summary is returned — the secret never
+    // leaves this helper.
+    const plan = await this.fetchBrowserPlan(idOrTarget, false);
     return applyBrowserLogin(page, plan);
   }
 

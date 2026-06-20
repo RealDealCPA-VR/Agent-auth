@@ -414,6 +414,20 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       // trust level as /use), not the never-reaches-agent vault:proxy scope.
       if (!hasScope(agent.scopes, 'vault:use')) return deny('missing scope: vault:use');
 
+      // raw=true is the LIABILITY path: the agent intends to receive the plan
+      // (secret-bearing) and hold it itself (SDK getBrowserLoginPlan), rather than
+      // letting the SDK helper apply it to a page and confine it. Gate it behind an
+      // explicit, off-by-default scope so the unsafe affordance is opt-in per agent.
+      const raw = (req.query as { raw?: string } | undefined)?.raw === 'true';
+      if (raw && !hasScope(agent.scopes, 'vault:browser:raw')) {
+        return deny(
+          'missing scope: vault:browser:raw',
+          403,
+          'missing_scope',
+          'missing scope: vault:browser:raw (raw browser-login plans are off by default)',
+        );
+      }
+
       // Validate target-scope AND that a plan can be built (spec present/valid,
       // username available) BEFORE charging a use — so a misconfigured or
       // out-of-scope call never burns a maxUses slot or spends an approval grant.
@@ -490,8 +504,9 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         agentId: agent.agentId,
         passportId: agent.passportId,
         credentialId: id,
-        // Never log the plan/secret; record target + mode only.
-        detail: { target: result.target, type: result.type, via: 'browser', mode: built.plan.mode },
+        // Never log the plan/secret; record target + mode + whether this was the
+        // raw (caller-holds-the-secret) path or the SDK-applied path.
+        detail: { target: result.target, type: result.type, via: 'browser', mode: built.plan.mode, raw },
         ip: req.ip,
       });
 

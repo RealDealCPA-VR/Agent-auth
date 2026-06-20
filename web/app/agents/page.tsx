@@ -17,6 +17,7 @@ function AgentsView() {
   const [scopeRead, setScopeRead] = useState(true);
   const [scopeUse, setScopeUse] = useState(true);
   const [scopeProxy, setScopeProxy] = useState(false);
+  const [scopeBrowserRaw, setScopeBrowserRaw] = useState(false);
   const [targets, setTargets] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -56,6 +57,7 @@ function AgentsView() {
     if (scopeRead) scopes.push('vault:read');
     if (scopeUse) scopes.push('vault:use');
     if (scopeProxy) scopes.push('vault:proxy');
+    if (scopeBrowserRaw) scopes.push('vault:browser:raw');
     for (const raw of targets.split(',')) {
       const t = raw.trim();
       if (!t) continue;
@@ -236,6 +238,24 @@ function AgentsView() {
                   onChange={(e) => setScopeProxy(e.target.checked)}
                 />
                 vault:proxy
+              </label>
+              <label
+                title="Allows the raw browser-login plan path (getBrowserLoginPlan). It returns plaintext secrets to the agent's process — do not log, persist, or pass to an LLM. The safe browserLogin helper does NOT need this."
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  textTransform: 'none',
+                  marginLeft: 16,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ width: 'auto' }}
+                  checked={scopeBrowserRaw}
+                  onChange={(e) => setScopeBrowserRaw(e.target.checked)}
+                />
+                Allow raw browser-login plans (secret-bearing)
               </label>
             </div>
           </div>

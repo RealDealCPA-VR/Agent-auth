@@ -127,12 +127,17 @@ fallback) and applies the plan per its `mode`:
 | `localStorage` | `goto(plan.url)`, then seed `localStorage` items                     |
 | `form`         | run the ordered `goto` / `fill` / `click` actions                   |
 
-Advanced callers can split the two steps: fetch the raw plan with
-`getBrowserLoginPlan(idOrTarget)` (resolves `idOrTarget` exactly like
-`useCredential`; a policy that needs approval throws `ApprovalPendingError`),
-then apply it yourself with the standalone `applyBrowserLogin(page, plan)`. Both
-return the same non-secret `BrowserLoginSummary`:
+`browserLogin` is the **safe path** and needs only the **`vault:use`** scope. It
+returns a non-secret `BrowserLoginSummary`:
 `{ mode, target, url, cookieNames?, headerNames?, storageKeys?, filledFields?, submitted? }`.
+
+> **`getBrowserLoginPlan(idOrTarget)` is the liability path.** It returns the plan
+> with the secret **in plaintext to your process** — treat it like a decrypted
+> password (do not log, pass to an LLM, or persist it). It requires the
+> **`vault:browser:raw`** scope (off by default) in addition to `vault:use`;
+> without it the call is `403 missing_scope`. Prefer `browserLogin` (which confines
+> the secret) unless you have a concrete reason you can't. If you do hold a plan,
+> apply it with the standalone `applyBrowserLogin(page, plan)`.
 
 ### Agent methods
 
