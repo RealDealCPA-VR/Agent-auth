@@ -109,16 +109,26 @@ describe('MFA approval-queue handoff', () => {
     expect(got.json().code).toBeNull();
   });
 
-  it('expired request returns 410 and audits mfa.expired', async () => {
+  it('expired request returns 410 and audits mfa.expired ONCE no matter how often polled', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'e', kind: 'sms' })).json().requestId;
     await db
       .update(schema.mfaRequests)
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(eq(schema.mfaRequests.id, requestId));
-    const res = await pollMfa(s.agentKey, s.credId, requestId);
-    expect(res.statusCode).toBe(410);
-    expect(res.json().error.code).toBe('expired');
+
+    // Poll several times — each is 410 expired, but only the transition is audited.
+    for (let i = 0; i < 4; i += 1) {
+      const res = await pollMfa(s.agentKey, s.credId, requestId);
+      expect(res.statusCode).toBe(410);
+      expect(res.json().error.code).toBe('expired');
+    }
+
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(s.token) });
+    const expiredEvents = (trail.json().items as Array<{ action: string }>).filter(
+      (i) => i.action === 'mfa.expired',
+    );
+    expect(expiredEvents).toHaveLength(1);
   });
 
   it('denied request: the agent poll returns status denied', async () => {

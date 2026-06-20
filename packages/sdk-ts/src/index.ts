@@ -286,6 +286,11 @@ export interface MfaChallenge {
   detectedAt: string;
   /** Client-issued challenge id (Phase 2 ties it to a server approval request). */
   challengeId: string;
+  /** Code input selector from the credential's `metadata.browser.mfa` (if set), so
+   * {@link AgentAuthClient.resolveMfa} can inject the code without an explicit opt. */
+  inputSelector?: string;
+  /** Submit selector from the credential's `metadata.browser.mfa` (if set). */
+  submitSelector?: string;
 }
 
 /** Options for {@link AgentAuthClient.resolveMfa}. */
@@ -376,6 +381,8 @@ export interface BrowserPage {
   url?: () => string;
   /** Full page HTML (Playwright + Puppeteer `page.content()`) — used for MFA detection. */
   content?: () => Promise<string>;
+  /** Wait for navigation to settle after a submit (Playwright; best-effort). */
+  waitForLoadState?: (state?: string) => Promise<unknown>;
 }
 
 /** The subset of a Playwright `BrowserContext` the SDK uses. */
@@ -743,6 +750,10 @@ async function detectMfaChallenge(
     promptText: spec?.channelHint ?? extractPromptText(html) ?? 'Multi-factor authentication required',
     detectedAt: new Date().toISOString(),
     challengeId: genChallengeId(),
+    // Carry the configured selectors forward so resolveMfa can inject the code
+    // without an explicit option (the per-credential spec drives it).
+    ...(spec?.inputSelector !== undefined ? { inputSelector: spec.inputSelector } : {}),
+    ...(spec?.submitSelector !== undefined ? { submitSelector: spec.submitSelector } : {}),
   };
 }
 
@@ -862,6 +873,15 @@ export async function applyBrowserLogin(
             );
         }
       }
+      // A submit click triggers async navigation that Playwright's click() does
+      // not await; settle it before reading the URL/HTML so success/MFA detection
+      // doesn't race against a still-loading page. Best-effort (Playwright only).
+      try {
+        await page.waitForLoadState?.('networkidle');
+      } catch {
+        /* ignore */
+      }
+
       // Best-effort success detection: did we land on a URL that matches?
       const current = page.url?.();
       let submitted: boolean | undefined;
@@ -1159,15 +1179,19 @@ export class AgentAuthClient extends Transport {
       if (res.status === 'denied') return { resolved: false, status: 'denied' };
       if (res.status === 'revoked') return { resolved: false, status: 'revoked' };
       if (res.status === 'approved') {
+        const inputSelector = opts.inputSelector ?? challenge.inputSelector;
+        const submitSelector = opts.submitSelector ?? challenge.submitSelector;
         // 3) Inject the code into the DOM (never returned upward). A push/webauthn
         // approval carries no code — nothing to fill, the session already advanced.
         if (res.code) {
-          const inputSelector = opts.inputSelector;
-          if (inputSelector) {
-            if (page.fill) await page.fill(inputSelector, res.code);
-            else if (page.type) await page.type(inputSelector, res.code);
+          if (!inputSelector) {
+            // Approved + code, but no selector to fill it — the form was NOT
+            // advanced. Report not-resolved so the caller learns the code was
+            // consumed but not applied (rather than a silent false success).
+            return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
           }
-          const submitSelector = opts.submitSelector;
+          if (page.fill) await page.fill(inputSelector, res.code);
+          else if (page.type) await page.type(inputSelector, res.code);
           if (submitSelector) await page.click(submitSelector);
         }
         return { resolved: true, status: 'approved', by: res.by ?? null, at: res.at ?? null };

@@ -41,11 +41,15 @@ npx tsx examples/mfa-demo/demo.ts
 Expected output (note: a non-secret summary — **no `demo-password`, no `123456`**):
 
 ```
-browserLogin → {"mode":"form","target":"localhost:8799","url":"http://localhost:8799/login.html","authenticated":false,"filledFields":2,"submitted":false,"mfa":{"kind":"totp","promptText":"...","detectedAt":"...","challengeId":"..."}}
-MFA challenge: Enter the 6-digit code ...
+browserLogin → {"mode":"form","target":"localhost:8799","url":"http://localhost:8799/login.html","authenticated":false,"filledFields":2,"submitted":false,"mfa":{"kind":"totp","promptText":"authenticator app","detectedAt":"...","challengeId":"...","inputSelector":"#otp","submitSelector":"#verify"}}
+MFA challenge: authenticator app
 MFA resolved → {"resolved":true,"status":"approved","by":"mfa-demo+...@example.com","at":"..."}
 final page: http://localhost:8799/dashboard.html
 ```
+
+> `promptText` here is the credential's `channelHint` ("authenticator app"). Omit
+> `channelHint` from the `mfa` spec to fall through to the page's visible text
+> ("Enter the 6-digit code …") instead.
 
 To do it as a **live, human-in-the-loop** demo instead of the simulated approval:
 remove the `approveAsHuman(...)` call from `demo.ts`, open the admin UI at

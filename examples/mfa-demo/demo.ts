@@ -13,15 +13,19 @@
  * The password and the MFA code NEVER leave the SDK process — only a non-secret
  * summary is logged. Run the AgentAuth server first (pnpm dev), then:
  *
- *   pnpm add -D playwright @agentauth/sdk && npx playwright install chromium
+ *   pnpm add -D playwright tsx && npx playwright install chromium
  *   npx tsx examples/mfa-demo/demo.ts
+ *
+ * The AgentAuth SDK is imported directly from source (tsx transpiles it; the SDK
+ * has zero runtime dependencies), so no extra install or workspace wiring is
+ * needed. In your own app you'd `import { ... } from '@agentauth/sdk'` instead.
  */
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { HumanClient, AgentAuthClient } from '@agentauth/sdk';
+import { HumanClient, AgentAuthClient } from '../../packages/sdk-ts/src/index.ts';
 
 const API = process.env.AGENTAUTH_BASE_URL ?? 'http://localhost:8080';
 const PORT = Number(process.env.DEMO_PORT ?? 8799);

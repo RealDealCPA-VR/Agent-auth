@@ -187,7 +187,7 @@ def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[s
         detected = url_hit or text_hit or input_hit
     if not detected:
         return None
-    return {
+    challenge: Dict[str, Any] = {
         "kind": spec.get("kind", "otp"),
         "promptText": spec.get("channelHint")
         or _extract_prompt_text(html)
@@ -195,6 +195,13 @@ def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[s
         "detectedAt": datetime.now(timezone.utc).isoformat(),
         "challengeId": "mfa_" + uuid.uuid4().hex,
     }
+    # Carry the configured selectors forward so resolve_mfa can inject the code
+    # without an explicit kwarg (the per-credential spec drives it).
+    if spec.get("inputSelector") is not None:
+        challenge["inputSelector"] = spec["inputSelector"]
+    if spec.get("submitSelector") is not None:
+        challenge["submitSelector"] = spec["submitSelector"]
+    return challenge
 
 
 def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
@@ -218,6 +225,14 @@ def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
             page.click(action["selector"])
         else:
             raise ValueError(f"unknown form action type: {kind!r}")
+    # Settle async navigation triggered by the submit before reading url/HTML, so
+    # success/MFA detection doesn't race a still-loading page (best-effort).
+    wait = getattr(page, "wait_for_load_state", None)
+    if callable(wait):
+        try:
+            wait("networkidle")
+        except Exception:  # noqa: BLE001
+            pass
     summary = _summary_base(plan)
     summary["filled_fields"] = filled_fields
     # `submitted` mirrors the TS contract: present ONLY when the plan carries

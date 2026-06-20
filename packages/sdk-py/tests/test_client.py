@@ -1119,6 +1119,39 @@ def test_resolve_mfa_denied_does_not_inject():
     assert not any(c[0] == "fill" for c in page.calls)
 
 
+def test_resolve_mfa_approved_without_selector_is_not_resolved():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "approved", "code": "123456", "by": "o@e.com", "at": "t"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    # No input_selector kwarg and the challenge carries none -> code can't be applied.
+    res = client.resolve_mfa(page, cid, _MFA_CHALLENGE, sleep=lambda *_: None)
+    assert res["resolved"] is False
+    assert res["status"] == "approved"
+    assert not any(c[0] == "fill" for c in page.calls)
+
+
+def test_resolve_mfa_falls_back_to_challenge_selector():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "approved", "code": "123456", "by": "o@e.com", "at": "t"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    challenge = {**_MFA_CHALLENGE, "inputSelector": "#otp", "submitSelector": "#verify"}
+    res = client.resolve_mfa(page, cid, challenge, sleep=lambda *_: None)
+    assert res["resolved"] is True
+    assert ("fill", "#otp", "123456") in page.calls
+
+
 def test_resolve_mfa_410_is_expired():
     cid = "11111111-1111-4111-8111-111111111111"
 

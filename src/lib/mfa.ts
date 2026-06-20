@@ -21,8 +21,11 @@ export const MFA_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const MFA_MAX_PENDING = 5; // concurrent pending requests
 export const MFA_MAX_PER_HOUR = 20; // created per rolling hour
 
-function aadFor(challengeId: string): Buffer {
-  return Buffer.from(`mfa:${challengeId}`);
+/** AAD for the sealed one-time code. Bound to the IMMUTABLE, server-issued unique
+ * row id (and passport) — NOT the agent-supplied, non-unique challengeId — so the
+ * sealed blob cannot be substituted between rows that happen to share a challengeId. */
+function aadFor(passportId: string, rowId: string): Buffer {
+  return Buffer.from(`mfa:${passportId}:${rowId}`);
 }
 
 export type CreateMfaResult =
@@ -103,7 +106,7 @@ export type FetchMfaResult =
   | { status: 'denied' }
   | { status: 'revoked' }
   | { status: 'gone' } // already consumed
-  | { status: 'expired' }
+  | { status: 'expired'; first: boolean } // `first` true only on the pending/approved->expired transition
   | { status: 'not_found' };
 
 /**
@@ -137,13 +140,25 @@ export async function fetchMfaCode(
   if (row.status === 'denied') return { status: 'denied' };
   if (row.status === 'revoked') return { status: 'revoked' };
   if (row.expiresAt.getTime() <= Date.now()) {
-    if (row.status !== 'expired') {
-      await db
+    // Flip a still-live (pending/approved) row to expired exactly once. `first`
+    // reflects whether THIS poll performed the transition, so the route audits
+    // mfa.expired only on the transition — not on every subsequent poll (which
+    // would let an agent amplify rows into the append-only audit chain).
+    let first = false;
+    if (row.status === 'pending' || row.status === 'approved') {
+      const flipped = await db
         .update(schema.mfaRequests)
         .set({ status: 'expired' })
-        .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'pending')));
+        .where(
+          and(
+            eq(schema.mfaRequests.id, row.id),
+            or(eq(schema.mfaRequests.status, 'pending'), eq(schema.mfaRequests.status, 'approved')),
+          ),
+        )
+        .returning({ id: schema.mfaRequests.id });
+      first = flipped.length > 0;
     }
-    return { status: 'expired' };
+    return { status: 'expired', first };
   }
   if (row.status === 'pending') return { status: 'pending' };
 
@@ -158,7 +173,7 @@ export async function fetchMfaCode(
 
   let code: string | null = null;
   if (row.sealedCode) {
-    const buf = await openForPassport(passportId, row.sealedCode as SealedBox, aadFor(row.challengeId));
+    const buf = await openForPassport(passportId, row.sealedCode as SealedBox, aadFor(row.passportId, row.id));
     if (buf) {
       code = buf.toString('utf8');
       buf.fill(0);
@@ -221,7 +236,7 @@ export async function approveMfaRequest(
   if (typeof code === 'string' && code.length > 0) {
     const codeBuf = Buffer.from(code, 'utf8');
     try {
-      sealedCode = await sealForPassport(row.passportId, codeBuf, aadFor(row.challengeId));
+      sealedCode = await sealForPassport(row.passportId, codeBuf, aadFor(row.passportId, row.id));
     } finally {
       codeBuf.fill(0);
     }

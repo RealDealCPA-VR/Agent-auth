@@ -1178,6 +1178,33 @@ describe('AgentAuthClient.resolveMfa', () => {
     expect(res.resolved).toBe(false);
     expect(res.status).toBe('expired');
   });
+
+  it('reports resolved:false when an approved code has no selector to inject into', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { body: { status: 'approved', code: '123456', by: 'o@e.com', at: 't' } },
+    ]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    // No inputSelector in opts AND the challenge carries none -> can't apply.
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, { sleep: noSleep });
+    expect(res.resolved).toBe(false);
+    expect(res.status).toBe('approved');
+    expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
+  });
+
+  it('falls back to the challenge inputSelector/submitSelector when no opt is given', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { body: { status: 'approved', code: '123456', by: 'o@e.com', at: 't' } },
+    ]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const ch: MfaChallenge = { ...challenge, inputSelector: '#otp', submitSelector: '#verify' };
+    const res = await aa.resolveMfa(page, PLAN_UUID, ch, { sleep: noSleep });
+    expect(res.resolved).toBe(true);
+    expect((events.find((e) => e.kind === 'fill')?.arg as { selector: string }).selector).toBe('#otp');
+  });
 });
 
 describe('browser hardening (Phase 4)', () => {

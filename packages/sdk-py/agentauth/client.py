@@ -711,11 +711,17 @@ class AgentAuthClient(_BaseClient):
                 return {"resolved": False, "status": "revoked"}
             if status == "approved":
                 code = res.get("code")
+                in_sel = input_selector or challenge.get("inputSelector")
+                sub_sel = submit_selector or challenge.get("submitSelector")
                 if code:
-                    if input_selector:
-                        page.fill(input_selector, code)
-                    if submit_selector:
-                        page.click(submit_selector)
+                    if not in_sel:
+                        # Approved + code, but no selector to fill it — the form was
+                        # NOT advanced. Report not-resolved (code consumed, unapplied).
+                        return {"resolved": False, "status": "approved",
+                                "by": res.get("by"), "at": res.get("at")}
+                    page.fill(in_sel, code)
+                    if sub_sel:
+                        page.click(sub_sel)
                 return {"resolved": True, "status": "approved", "by": res.get("by"), "at": res.get("at")}
             sleeper(poll_interval_s)
         return {"resolved": False, "status": "timeout"}

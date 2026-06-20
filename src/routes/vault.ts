@@ -505,8 +505,10 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         agentId: agent.agentId,
         passportId: agent.passportId,
         credentialId: id,
-        // Never log the plan/secret; record target + mode + whether this was the
-        // raw (caller-holds-the-secret) path or the SDK-applied path.
+        // Never log the plan/secret. `raw` is the raw-REQUEST flag (caller intent:
+        // whether vault:browser:raw was exercised) — the server returns the same
+        // secret-bearing plan either way and cannot attest that a non-raw caller
+        // actually confined the secret in the SDK helper.
         detail: { target: result.target, type: result.type, via: 'browser', mode: built.plan.mode, raw },
         ip: req.ip,
       });
@@ -597,15 +599,19 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         case 'gone':
           return fail(req, reply, 410, 'gone', 'mfa code already consumed');
         case 'expired':
-          await audit({
-            action: 'mfa.expired',
-            success: false,
-            agentId: agent.agentId,
-            passportId: agent.passportId,
-            credentialId: id,
-            detail: { requestId },
-            ip: req.ip,
-          });
+          // Audit the expiry ONCE — only on the actual transition — so repeated
+          // polling of an expired request can't append unbounded mfa.expired rows.
+          if (res.first) {
+            await audit({
+              action: 'mfa.expired',
+              success: false,
+              agentId: agent.agentId,
+              passportId: agent.passportId,
+              credentialId: id,
+              detail: { requestId },
+              ip: req.ip,
+            });
+          }
           return fail(req, reply, 410, 'expired', 'mfa request expired');
         case 'approved':
           await audit({

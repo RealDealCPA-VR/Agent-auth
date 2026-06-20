@@ -160,7 +160,13 @@ export type BuildPlanResult =
 // plan so a malformed deposited secret yields a clean bad_browser_spec rather
 // than a silently-broken plan (the value-side analogue of the proxy route's
 // header hygiene, which the names/prefix checks above only cover structurally).
-const ILLEGAL_COOKIE_VALUE_RE = /[\x00-\x1f\x7f;]/;
+function hasIllegalCookieChar(v: string): boolean {
+  for (let i = 0; i < v.length; i += 1) {
+    const c = v.charCodeAt(i);
+    if (c <= 0x1f || c === 0x7f || c === 0x3b) return true; // control char or ';'
+  }
+  return false;
+}
 
 /** Default landing URL for cookie/header/localStorage application: https://<host>/. */
 function defaultUrl(target: string): string {
@@ -401,7 +407,7 @@ export function buildBrowserPlan(args: {
       if (cookies.length === 0) {
         return { ok: false, reason: 'bad_browser_spec', message: 'no cookies could be derived from the secret' };
       }
-      if (cookies.some((c) => ILLEGAL_COOKIE_VALUE_RE.test(c.value))) {
+      if (cookies.some((c) => hasIllegalCookieChar(c.value))) {
         return {
           ok: false,
           reason: 'bad_browser_spec',

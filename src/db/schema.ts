@@ -251,7 +251,8 @@ export const mfaRequests = pgTable(
     channelHint: text('channel_hint'),
     promptText: text('prompt_text'),
     // Sealed one-time code: { v, alg, iv, ciphertext, tag } — AES-256-GCM under the
-    // passport DEK, AAD bound to the challenge. Null until approved (or for push).
+    // passport DEK, AAD bound to the immutable request id (passport+row id). Null
+    // until approved (or for push/webauthn).
     sealedCode: jsonb('sealed_code'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
