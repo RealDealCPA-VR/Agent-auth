@@ -163,8 +163,17 @@ def _page_content(page: Any) -> str:
     return ""
 
 
+def _scrub_prompt_text(s: str) -> str:
+    """Mask any run of 4+ digits in best-effort page text so a stray account number
+    or a partially-rendered code can't ride into the server-bound (and human-shown)
+    promptText. Operator-curated channelHints are left untouched."""
+    return re.sub(r"\d{4,}", "••••", s)
+
+
 def _extract_prompt_text(html: str) -> Optional[str]:
-    """A non-secret, best-effort prompt string from the page's visible text."""
+    """A best-effort prompt string from the page's visible text. Treated as
+    display/approval text, NOT a trusted non-secret field: digit runs are masked
+    (see ``_scrub_prompt_text``) before it is surfaced or sent to the server."""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -176,7 +185,7 @@ def _extract_prompt_text(html: str) -> Optional[str]:
     ) or re.search(r".{0,60}(authenticator|verification|one-time code).{0,60}", text, re.I)
     if not m:
         return None
-    return m.group(0).strip()[:160]
+    return _scrub_prompt_text(m.group(0).strip()[:160])
 
 
 def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:

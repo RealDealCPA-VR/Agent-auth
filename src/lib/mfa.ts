@@ -252,31 +252,66 @@ export async function fetchMfaCode(
   }
 
   // Consume single-use AND append mfa.consumed in ONE transaction: the secret is
-  // delivered only if its audit row is durably chained. A concurrent poll loses the
-  // status='approved' guard (-> 'gone'); an audit-write failure rolls the consume
-  // back (row stays 'approved') so the code is withheld rather than released unlogged.
-  const delivered = await db.transaction(async (tx): Promise<boolean> => {
+  // delivered only if its audit row is durably chained. The consume guard re-checks
+  // the TTL (gt expiresAt) so a row that lapsed during the KMS-backed unseal above is
+  // NOT delivered a sliver past expiry — closing the TTL TOCTOU and mirroring the
+  // re-check already in approve/deny. A concurrent poll loses the status guard; an
+  // audit-write failure rolls the consume back (row stays 'approved') so the code is
+  // withheld rather than released unlogged.
+  const outcome = await db.transaction(async (tx): Promise<'consumed' | 'gone' | 'expired'> => {
     const consumed = await tx
       .update(schema.mfaRequests)
       .set({ status: 'consumed', consumedAt: new Date() })
+      .where(
+        and(
+          eq(schema.mfaRequests.id, row.id),
+          eq(schema.mfaRequests.status, 'approved'),
+          gt(schema.mfaRequests.expiresAt, new Date()),
+        ),
+      )
+      .returning({ id: schema.mfaRequests.id });
+    if (consumed.length > 0) {
+      await audit(
+        {
+          action: 'mfa.consumed',
+          success: true,
+          agentId,
+          passportId,
+          credentialId,
+          detail: { requestId, by },
+          ip: opts.ip,
+        },
+        tx,
+      );
+      return 'consumed';
+    }
+    // The guarded consume lost. If the row is STILL 'approved', the only reason is
+    // that its TTL lapsed during the unseal: flip it to expired (zeroing the now
+    // undeliverable code) and audit the transition once, mirroring the lazy-expire
+    // path above. If the flip matches nothing, a concurrent poll already
+    // consumed/closed it -> 'gone'.
+    const expiredFlip = await tx
+      .update(schema.mfaRequests)
+      .set({ status: 'expired', sealedCode: null })
       .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'approved')))
       .returning({ id: schema.mfaRequests.id });
-    if (consumed.length === 0) return false; // a concurrent poll already consumed it
+    if (expiredFlip.length === 0) return 'gone';
     await audit(
       {
-        action: 'mfa.consumed',
-        success: true,
+        action: 'mfa.expired',
+        success: false,
         agentId,
         passportId,
         credentialId,
-        detail: { requestId, by },
+        detail: { requestId },
         ip: opts.ip,
       },
       tx,
     );
-    return true;
+    return 'expired';
   });
-  if (!delivered) return { status: 'gone' };
+  if (outcome === 'gone') return { status: 'gone' };
+  if (outcome === 'expired') return { status: 'expired' };
 
   return { status: 'approved', code, by, at: row.decidedAt?.toISOString() ?? null };
 }
@@ -335,6 +370,11 @@ export async function approveMfaRequest(
     const codeBuf = Buffer.from(code, 'utf8');
     try {
       sealedCode = await sealForPassport(row.passportId, codeBuf, aadFor(row.passportId, row.id));
+    } catch {
+      // A thrown crypto error (e.g. a malformed DEK in createCipheriv) converges on
+      // the same fail-closed path as a null return: sealedCode stays null, the
+      // seal_failed guard below produces the clean 500 instead of an unhandled one.
+      sealedCode = null;
     } finally {
       codeBuf.fill(0);
     }

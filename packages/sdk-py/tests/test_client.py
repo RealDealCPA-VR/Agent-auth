@@ -9,6 +9,7 @@ the non-2xx -> AgentAuthError mapping.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -1036,6 +1037,26 @@ def test_browser_login_form_detects_mfa_by_text_and_input():
     assert summary["authenticated"] is False
     assert summary["mfa"]["kind"] == "otp"  # default when spec omits kind
     assert "code" in summary["mfa"]["promptText"].lower()
+
+
+def test_browser_login_masks_long_digit_runs_in_prompt_text():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",
+            "actions": [{"type": "click", "selector": "#go"}],
+            "successUrlIncludes": "/home"}
+    page = FakePage()
+    page.post_submit_url = "https://site.x.com/step2"
+    # A long digit run (account number) is scraped next to the keyword.
+    page.html = ("<h1>Verification code</h1><p>Enter the code for account 998812345 "
+                 "sent to your authenticator</p><input autocomplete='one-time-code'>")
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    prompt = summary["mfa"]["promptText"]
+    # 4+ digit runs are masked; the keyword survives so the prompt stays useful.
+    assert not re.search(r"\d{4,}", prompt)
+    assert "••••" in prompt
+    assert "code" in prompt.lower()
 
 
 def test_browser_login_form_success_url_is_authenticated_no_mfa():

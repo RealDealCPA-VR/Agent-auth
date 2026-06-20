@@ -278,13 +278,16 @@ export interface MfaSpec {
 }
 
 /**
- * A detected MFA challenge. **Non-secret** — `promptText` is what the page says
- * ("Enter the 6-digit code sent to ••••1234"), safe to surface to an LLM and to
- * log. The browser is left on the challenge page.
+ * A detected MFA challenge. `promptText` is what the page says ("Enter the 6-digit
+ * code sent to ••••1234") — it is best-effort page text (operator channelHint, else
+ * scraped page text with digit runs masked), safe to surface to an LLM; do not
+ * assume it is fully sanitized. The browser is left on the challenge page.
  */
 export interface MfaChallenge {
   kind: MfaKind;
-  /** The non-secret prompt the page shows the user. */
+  /** Best-effort prompt the page shows the user. Operator-curated channelHint when
+   * set; otherwise scraped page text with 4+ digit runs masked. Display/approval
+   * text — do not assume fully sanitized. */
   promptText: string;
   /** ISO-8601 timestamp of detection. */
   detectedAt: string;
@@ -676,7 +679,17 @@ const MFA_TEXT_RE =
 const MFA_INPUT_RE =
   /autocomplete\s*=\s*["']one-time-code["']|inputmode\s*=\s*["']numeric["']|maxlength\s*=\s*["']6["']/i;
 
-/** A non-secret, best-effort prompt string pulled from the page's visible text. */
+/** Mask any run of 4+ digits in best-effort page text, so a stray account number
+ * or a partially-rendered code captured from the page can't ride into the
+ * server-bound (and human-shown) promptText. Operator-curated channelHints are
+ * left untouched; this only scrubs scraped page text. */
+function scrubPromptText(s: string): string {
+  return s.replace(/\d{4,}/g, '••••');
+}
+
+/** A best-effort prompt string pulled from the page's visible text. Treated as
+ * display/approval text, NOT a trusted non-secret field: digit runs are masked
+ * (see {@link scrubPromptText}) before it is surfaced or sent to the server. */
 function extractPromptText(html: string): string | undefined {
   const text = html
     .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
@@ -687,7 +700,7 @@ function extractPromptText(html: string): string | undefined {
     text.match(/[^.<>]*?(enter the[^.<>]{0,40}code|verification code|one-time code|6-digit code|two-factor)[^.<>]*/i) ??
     text.match(/.{0,60}(authenticator|verification|one-time code).{0,60}/i);
   const snippet = m?.[0]?.trim();
-  return snippet ? snippet.slice(0, 160) : undefined;
+  return snippet ? scrubPromptText(snippet.slice(0, 160)) : undefined;
 }
 
 /** Reduce a URL to its bare lowercase host. */
@@ -771,7 +784,9 @@ async function detectMfaChallenge(
   if (!detected) return undefined;
   return {
     kind: spec?.kind ?? 'otp',
-    promptText: spec?.channelHint ?? extractPromptText(html) ?? 'Multi-factor authentication required',
+    // Truthy fallback (matches the Python SDK): an empty-string channelHint falls
+    // through to the extracted page text rather than becoming a blank prompt.
+    promptText: spec?.channelHint || extractPromptText(html) || 'Multi-factor authentication required',
     detectedAt: new Date().toISOString(),
     challengeId: genChallengeId(),
     // Carry the configured selectors forward so resolveMfa can inject the code

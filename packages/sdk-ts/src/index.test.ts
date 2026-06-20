@@ -1101,6 +1101,45 @@ describe('applyBrowserLogin / browserLogin', () => {
     expect(summary.mfa?.promptText.toLowerCase()).toContain('code');
   });
 
+  it('masks long digit runs scraped into promptText (no account number / partial code leaks to the server prompt)', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [{ type: 'click', selector: '#go' }],
+      successUrlIncludes: '/home',
+    };
+    // The scraped page text contains a long digit run (account no) next to the keyword.
+    const html =
+      '<h1>Verification code</h1><p>Enter the code for account 998812345 ' +
+      'sent to your authenticator</p><input autocomplete="one-time-code">';
+    const { page } = makeFakePage({ postSubmitUrl: 'https://site.example.com/step2', html });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.mfa).toBeDefined();
+    // 4+ digit runs are masked; the keyword survives so the prompt stays useful.
+    expect(summary.mfa?.promptText).not.toMatch(/\d{4,}/);
+    expect(summary.mfa?.promptText).toContain('••••');
+    expect(summary.mfa?.promptText.toLowerCase()).toContain('code');
+  });
+
+  it('promptText falls through an empty-string channelHint to the page text (TS/Py parity)', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [{ type: 'click', selector: '#go' }],
+      successUrlIncludes: '/home',
+      mfa: { kind: 'totp', channelHint: '' },
+    };
+    const html = '<h1>Verification code</h1><p>Enter the one-time code</p>';
+    const { page } = makeFakePage({ postSubmitUrl: 'https://site.example.com/step2', html });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.mfa).toBeDefined();
+    // An empty channelHint must NOT become a blank prompt — truthy fallback, like Python.
+    expect(summary.mfa?.promptText).not.toBe('');
+    expect(summary.mfa?.promptText.toLowerCase()).toContain('code');
+  });
+
   it('form mode: reaching successUrlIncludes is authenticated with no mfa', async () => {
     const plan: BrowserLoginPlan = {
       mode: 'form',
