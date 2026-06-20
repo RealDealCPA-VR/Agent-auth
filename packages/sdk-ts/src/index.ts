@@ -1225,7 +1225,16 @@ export class AgentAuthClient extends Transport {
           // don't submit an empty field or claim success. (The Python SDK targets
           // Playwright sync, where page.fill always exists, so it has no fallback.)
           if (!filled) return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
-          if (submitSelector) await page.click(submitSelector);
+          if (submitSelector) {
+            await page.click(submitSelector);
+            // The submit triggers async navigation that click() doesn't await —
+            // settle it so a caller reading page.url() right after sees the result.
+            try {
+              await page.waitForLoadState?.('networkidle');
+            } catch {
+              /* ignore */
+            }
+          }
         }
         return { resolved: true, status: 'approved', by: res.by ?? null, at: res.at ?? null };
       }

@@ -728,6 +728,14 @@ class AgentAuthClient(_BaseClient):
                     page.fill(in_sel, code)
                     if sub_sel:
                         page.click(sub_sel)
+                        # Settle the async navigation the submit triggers so a caller
+                        # reading page.url right after sees the result (best-effort).
+                        wait = getattr(page, "wait_for_load_state", None)
+                        if callable(wait):
+                            try:
+                                wait("networkidle")
+                            except Exception:  # noqa: BLE001
+                                pass
                 return {"resolved": True, "status": "approved", "by": res.get("by"), "at": res.get("at")}
             if time.monotonic() >= deadline:
                 break

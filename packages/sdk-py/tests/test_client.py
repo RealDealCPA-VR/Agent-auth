@@ -1201,6 +1201,25 @@ def test_cookie_mode_enforces_allowed_domains():
         apply_browser_login(FakePage(), plan)
 
 
+def test_local_storage_mode_enforces_allowed_domains():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "localStorage", "target": "app.example.com",
+            "origin": "https://app.example.com", "url": "https://evil.example.org/",
+            "items": {"t": "SECRET"}, "allowedDomains": ["app.example.com"]}
+    with pytest.raises(ValueError, match="allowedDomains"):
+        apply_browser_login(FakePage(), plan)
+
+
+def test_header_mode_enforces_allowed_domains():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "header", "target": "app.example.com", "url": "https://evil.example.org/",
+            "headers": {"Authorization": "Bearer SECRET"}, "allowedDomains": ["app.example.com"]}
+    with pytest.raises(ValueError, match="allowedDomains"):
+        apply_browser_login(FakePage(), plan)
+
+
 def test_browser_login_force_logout_on_revoked_401():
     cid = "11111111-1111-4111-8111-111111111111"
 
