@@ -1199,8 +1199,8 @@ export class AgentAuthClient extends Transport {
             filled = true;
           }
           // If the page exposes neither fill nor type, the code was never applied —
-          // don't submit an empty field or claim success (matches the Python SDK,
-          // which fails loud here).
+          // don't submit an empty field or claim success. (The Python SDK targets
+          // Playwright sync, where page.fill always exists, so it has no fallback.)
           if (!filled) return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
           if (submitSelector) await page.click(submitSelector);
         }

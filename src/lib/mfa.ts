@@ -2,6 +2,7 @@ import { and, count, desc, eq, gt, or, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import type { SealedBox } from '../crypto/envelope.js';
 import { sealForPassport, openForPassport } from './vault.js';
+import { audit } from './audit.js';
 
 /**
  * MFA handoff: the bridge between a browser-login MFA challenge detected by the
@@ -128,20 +129,26 @@ export type FetchMfaResult =
   | { status: 'denied' }
   | { status: 'revoked' }
   | { status: 'gone' } // already consumed
-  | { status: 'expired'; first: boolean } // `first` true only on the pending/approved->expired transition
+  | { status: 'expired' }
   | { status: 'not_found' };
 
 /**
  * Agent-side: fetch the resolution of an MFA request. On 'approved' the sealed
  * code is unsealed and returned EXACTLY ONCE (the row flips to consumed atomically);
- * a later fetch is 'gone'. Expired rows flip to 'expired' lazily. The approver's
- * email is returned as `by` for the non-secret summary.
+ * a later fetch is 'gone'. Expired rows flip to 'expired' lazily.
+ *
+ * The lifecycle audits (mfa.consumed on a secret release, mfa.expired on the
+ * once-only expiry transition) are appended INSIDE the same transaction as the
+ * state mutation: a one-time code is only delivered if its mfa.consumed row is
+ * durably chained — an audit-write failure rolls the consume back and the code is
+ * withheld (fail-closed), rather than releasing a secret with no audit record.
  */
 export async function fetchMfaCode(
   passportId: string,
   credentialId: string,
   agentId: string,
   requestId: string,
+  opts: { ip?: string } = {},
 ): Promise<FetchMfaResult> {
   if (!UUID_RE.test(requestId)) return { status: 'not_found' };
   const [row] = await db
@@ -162,25 +169,39 @@ export async function fetchMfaCode(
   if (row.status === 'denied') return { status: 'denied' };
   if (row.status === 'revoked') return { status: 'revoked' };
   if (row.expiresAt.getTime() <= Date.now()) {
-    // Flip a still-live (pending/approved) row to expired exactly once. `first`
-    // reflects whether THIS poll performed the transition, so the route audits
-    // mfa.expired only on the transition — not on every subsequent poll (which
-    // would let an agent amplify rows into the append-only audit chain).
-    let first = false;
+    // Flip a still-live (pending/approved) row to expired exactly once, auditing the
+    // transition in the SAME transaction so the once-only mfa.expired event is
+    // chained-or-rolled-back (a later poll then retries). Subsequent polls of an
+    // already-expired row perform no flip and no audit (no amplification).
     if (row.status === 'pending' || row.status === 'approved') {
-      const flipped = await db
-        .update(schema.mfaRequests)
-        .set({ status: 'expired' })
-        .where(
-          and(
-            eq(schema.mfaRequests.id, row.id),
-            or(eq(schema.mfaRequests.status, 'pending'), eq(schema.mfaRequests.status, 'approved')),
-          ),
-        )
-        .returning({ id: schema.mfaRequests.id });
-      first = flipped.length > 0;
+      await db.transaction(async (tx) => {
+        const flipped = await tx
+          .update(schema.mfaRequests)
+          .set({ status: 'expired' })
+          .where(
+            and(
+              eq(schema.mfaRequests.id, row.id),
+              or(eq(schema.mfaRequests.status, 'pending'), eq(schema.mfaRequests.status, 'approved')),
+            ),
+          )
+          .returning({ id: schema.mfaRequests.id });
+        if (flipped.length > 0) {
+          await audit(
+            {
+              action: 'mfa.expired',
+              success: false,
+              agentId,
+              passportId,
+              credentialId,
+              detail: { requestId },
+              ip: opts.ip,
+            },
+            tx,
+          );
+        }
+      });
     }
-    return { status: 'expired', first };
+    return { status: 'expired' };
   }
   if (row.status === 'pending') return { status: 'pending' };
 
@@ -201,14 +222,6 @@ export async function fetchMfaCode(
     buf.fill(0);
   }
 
-  // Now consume single-use, atomically (guards against a concurrent double-fetch).
-  const consumed = await db
-    .update(schema.mfaRequests)
-    .set({ status: 'consumed', consumedAt: new Date() })
-    .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'approved')))
-    .returning({ id: schema.mfaRequests.id });
-  if (consumed.length === 0) return { status: 'gone' }; // a concurrent poll already consumed it
-
   let by: string | null = null;
   if (row.decidedBy) {
     const [pr] = await db
@@ -218,6 +231,34 @@ export async function fetchMfaCode(
       .limit(1);
     by = pr?.email ?? null;
   }
+
+  // Consume single-use AND append mfa.consumed in ONE transaction: the secret is
+  // delivered only if its audit row is durably chained. A concurrent poll loses the
+  // status='approved' guard (-> 'gone'); an audit-write failure rolls the consume
+  // back (row stays 'approved') so the code is withheld rather than released unlogged.
+  const delivered = await db.transaction(async (tx): Promise<boolean> => {
+    const consumed = await tx
+      .update(schema.mfaRequests)
+      .set({ status: 'consumed', consumedAt: new Date() })
+      .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'approved')))
+      .returning({ id: schema.mfaRequests.id });
+    if (consumed.length === 0) return false; // a concurrent poll already consumed it
+    await audit(
+      {
+        action: 'mfa.consumed',
+        success: true,
+        agentId,
+        passportId,
+        credentialId,
+        detail: { requestId, by },
+        ip: opts.ip,
+      },
+      tx,
+    );
+    return true;
+  });
+  if (!delivered) return { status: 'gone' };
+
   return { status: 'approved', code, by, at: row.decidedAt?.toISOString() ?? null };
 }
 

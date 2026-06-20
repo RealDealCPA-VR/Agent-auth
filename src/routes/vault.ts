@@ -591,7 +591,7 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       if (!hasScope(agent.scopes, 'vault:use'))
         return fail(req, reply, 403, 'forbidden', 'missing scope: vault:use');
 
-      const res = await fetchMfaCode(agent.passportId, id, agent.agentId, requestId);
+      const res = await fetchMfaCode(agent.passportId, id, agent.agentId, requestId, { ip: req.ip });
       switch (res.status) {
         case 'not_found':
           return fail(req, reply, 404, 'not_found', 'mfa request not found');
@@ -604,31 +604,12 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
         case 'gone':
           return fail(req, reply, 410, 'gone', 'mfa code already consumed');
         case 'expired':
-          // Audit the expiry ONCE — only on the actual transition — so repeated
-          // polling of an expired request can't append unbounded mfa.expired rows.
-          if (res.first) {
-            await audit({
-              action: 'mfa.expired',
-              success: false,
-              agentId: agent.agentId,
-              passportId: agent.passportId,
-              credentialId: id,
-              detail: { requestId },
-              ip: req.ip,
-            });
-          }
+          // The once-only mfa.expired audit is appended atomically inside
+          // fetchMfaCode (transaction with the status flip), not here.
           return fail(req, reply, 410, 'expired', 'mfa request expired');
         case 'approved':
-          await audit({
-            action: 'mfa.consumed',
-            success: true,
-            agentId: agent.agentId,
-            passportId: agent.passportId,
-            credentialId: id,
-            // Never log the code; record the approver + correlation only.
-            detail: { requestId, by: res.by },
-            ip: req.ip,
-          });
+          // The mfa.consumed audit was appended atomically with the consume inside
+          // fetchMfaCode — the code is only delivered if that row is durably chained.
           // `code` is secret-bearing (the SDK injects it into the DOM and never
           // returns it up to the caller's reasoning layer).
           return reply.send({ status: 'approved', code: res.code, by: res.by, at: res.at });
