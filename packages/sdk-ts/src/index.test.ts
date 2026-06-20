@@ -1122,6 +1122,25 @@ describe('applyBrowserLogin / browserLogin', () => {
     expect(summary.mfa?.promptText.toLowerCase()).toContain('code');
   });
 
+  it('masks separator-grouped digit codes in promptText (e.g. "123 456", "12-34-56")', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [{ type: 'click', selector: '#go' }],
+      successUrlIncludes: '/home',
+    };
+    const html =
+      '<h1>Verification code</h1><p>Enter the one-time code 123 456 from your app</p>' +
+      '<input autocomplete="one-time-code">';
+    const { page } = makeFakePage({ postSubmitUrl: 'https://site.example.com/step2', html });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.mfa).toBeDefined();
+    // A space-separated 6-digit OTP must NOT survive into the approval prompt.
+    expect(summary.mfa?.promptText).not.toMatch(/\d[\s.-]?\d[\s.-]?\d[\s.-]?\d/);
+    expect(summary.mfa?.promptText).toContain('••••');
+  });
+
   it('promptText falls through an empty-string channelHint to the page text (TS/Py parity)', async () => {
     const plan: BrowserLoginPlan = {
       mode: 'form',

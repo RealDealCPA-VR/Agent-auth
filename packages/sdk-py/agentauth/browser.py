@@ -189,10 +189,12 @@ def _page_content(page: Any) -> str:
 
 
 def _scrub_prompt_text(s: str) -> str:
-    """Mask any run of 4+ digits in best-effort page text so a stray account number
-    or a partially-rendered code can't ride into the server-bound (and human-shown)
-    promptText. Operator-curated channelHints are left untouched."""
-    return re.sub(r"\d{4,}", "••••", s)
+    """Mask any code-like run of 4+ digits in best-effort page text, INCLUDING runs
+    broken up by single space/dash/dot separators (e.g. "123 456", "12-34-56"), so a
+    stray account number or a partially-rendered OTP can't ride into the server-bound
+    (and human-shown) promptText. Operator-curated channelHints are left untouched.
+    (Kept in lockstep with the TS SDK's scrubPromptText.)"""
+    return re.sub(r"\d(?:[\s.-]?\d){3,}", "••••", s)
 
 
 def _extract_prompt_text(html: str) -> Optional[str]:

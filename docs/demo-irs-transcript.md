@@ -63,7 +63,8 @@ Recording the screen is a manual step (it can't be automated here). Capture the
 three windows in one frame — Claude Desktop, the browser, and the AgentAuth audit
 trail — run the flow, and trim to ~90s. Drop the file at
 `docs/media/demo-irs-transcript.mp4` (or a GIF) and it will render from the README
-link at the top of the repo.
+link at the top of the repo. **Note:** `docs/media/` does not exist until you add
+the recording, so the README's video link is a placeholder until then.
 
 ## Why it's safe (the part to say out loud)
 

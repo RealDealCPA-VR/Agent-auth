@@ -687,12 +687,14 @@ const MFA_TEXT_RE =
 const MFA_INPUT_RE =
   /autocomplete\s*=\s*["']one-time-code["']|inputmode\s*=\s*["']numeric["']|maxlength\s*=\s*["']6["']/i;
 
-/** Mask any run of 4+ digits in best-effort page text, so a stray account number
- * or a partially-rendered code captured from the page can't ride into the
- * server-bound (and human-shown) promptText. Operator-curated channelHints are
- * left untouched; this only scrubs scraped page text. */
+/** Mask any code-like run of 4+ digits in best-effort page text, INCLUDING runs
+ * broken up by single space/dash/dot separators (e.g. "123 456", "12-34-56"), so a
+ * stray account number or a partially-rendered OTP captured from the page can't ride
+ * into the server-bound (and human-shown) promptText. Operator-curated channelHints
+ * are left untouched; this only scrubs scraped page text. (Kept in lockstep with the
+ * Python SDK's _scrub_prompt_text.) */
 function scrubPromptText(s: string): string {
-  return s.replace(/\d{4,}/g, '••••');
+  return s.replace(/\d(?:[\s.-]?\d){3,}/g, '••••');
 }
 
 /** A best-effort prompt string pulled from the page's visible text. Treated as

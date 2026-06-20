@@ -1059,6 +1059,24 @@ def test_browser_login_masks_long_digit_runs_in_prompt_text():
     assert "code" in prompt.lower()
 
 
+def test_browser_login_masks_separator_grouped_codes_in_prompt():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",
+            "actions": [{"type": "click", "selector": "#go"}],
+            "successUrlIncludes": "/home"}
+    page = FakePage()
+    page.post_submit_url = "https://site.x.com/step2"
+    page.html = ("<h1>Verification code</h1><p>Enter the one-time code 123 456 "
+                 "from your app</p><input autocomplete='one-time-code'>")
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    prompt = summary["mfa"]["promptText"]
+    # A space-separated 6-digit OTP must NOT survive into the approval prompt.
+    assert not re.search(r"\d[\s.-]?\d[\s.-]?\d[\s.-]?\d", prompt)
+    assert "••••" in prompt
+
+
 def test_browser_login_form_success_url_is_authenticated_no_mfa():
     cid = "11111111-1111-4111-8111-111111111111"
     plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",

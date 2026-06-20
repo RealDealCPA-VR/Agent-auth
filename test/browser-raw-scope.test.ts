@@ -121,6 +121,27 @@ describe('raw browser-login plan is gated behind vault:browser:raw', () => {
     expect(res.json().error.code).toBe('missing_scope');
   });
 
+  it('records the raw intent flag on a deny that is not the raw-scope gate (audit completeness)', async () => {
+    const { token } = await registerAndLogin(app);
+    const passportId = await createPassport(app, token);
+    // Lacks vault:use entirely → denied with the default 'forbidden' code, on a path
+    // that runs BEFORE the vault:browser:raw scope check. raw-intent must still record.
+    const agent = await issueAgent(app, token, passportId, ['vault:read', SCOPES_TARGET], 'no-use-bot');
+    const credId = await setupCred(token, passportId);
+
+    const res = await call(agent.apiKey, credId, true);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).not.toBe('missing_scope'); // the vault:use deny, not the raw gate
+
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(token) });
+    const denials = (
+      trail.json().items as Array<{ action: string; success: boolean; detail?: { raw?: boolean } }>
+    ).filter((i) => i.action === 'credential.browser' && i.success === false);
+    expect(denials.length).toBeGreaterThan(0);
+    // Caller raw-intent is recorded even on a non-raw-gate denial path (not just success).
+    expect(denials.every((d) => d.detail?.raw === true)).toBe(true);
+  });
+
   it('the issuer accepts vault:browser:raw as a valid scope', async () => {
     const { token } = await registerAndLogin(app);
     const passportId = await createPassport(app, token);
