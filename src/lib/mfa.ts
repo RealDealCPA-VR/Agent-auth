@@ -282,7 +282,11 @@ export async function fetchMfaCode(
   const outcome = await db.transaction(async (tx): Promise<'consumed' | 'gone' | 'expired'> => {
     const consumed = await tx
       .update(schema.mfaRequests)
-      .set({ status: 'consumed', consumedAt: new Date() })
+      // Zero the sealed code on consume too: a consumed row can never deliver again
+      // (a second fetch hits the status guard -> 'gone'), so its one-time secret must
+      // not linger at rest — uniform with the expire/revoke paths. The code is already
+      // unsealed (above) before this tx, so nulling the column doesn't affect delivery.
+      .set({ status: 'consumed', consumedAt: new Date(), sealedCode: null })
       .where(
         and(
           eq(schema.mfaRequests.id, row.id),

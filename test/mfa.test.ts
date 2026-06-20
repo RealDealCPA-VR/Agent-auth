@@ -197,6 +197,22 @@ describe('MFA approval-queue handoff', () => {
     expect(row!.sealed).toBeNull(); // the sealed-but-unfetched code is zeroed
   });
 
+  it('consuming a code zeroes the sealed code at rest (uniform destroy-on-terminal invariant)', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'cz', kind: 'totp' })).json().requestId;
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200);
+    // The single-use fetch delivers the code...
+    expect((await pollMfa(s.agentKey, s.credId, requestId)).json().code).toBe('123456');
+
+    const [row] = await db
+      .select({ status: schema.mfaRequests.status, sealed: schema.mfaRequests.sealedCode })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(row!.status).toBe('consumed');
+    expect(row!.sealed).toBeNull(); // ...and the spent one-time code no longer lingers sealed
+  });
+
   it('lazy-expiring an APPROVED-but-unfetched request also zeroes its sealed code at rest', async () => {
     const s = await setup();
     const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'ae', kind: 'totp' })).json().requestId;
