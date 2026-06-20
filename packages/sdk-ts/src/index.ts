@@ -1190,8 +1190,18 @@ export class AgentAuthClient extends Transport {
             // consumed but not applied (rather than a silent false success).
             return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
           }
-          if (page.fill) await page.fill(inputSelector, res.code);
-          else if (page.type) await page.type(inputSelector, res.code);
+          let filled = false;
+          if (page.fill) {
+            await page.fill(inputSelector, res.code);
+            filled = true;
+          } else if (page.type) {
+            await page.type(inputSelector, res.code);
+            filled = true;
+          }
+          // If the page exposes neither fill nor type, the code was never applied —
+          // don't submit an empty field or claim success (matches the Python SDK,
+          // which fails loud here).
+          if (!filled) return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
           if (submitSelector) await page.click(submitSelector);
         }
         return { resolved: true, status: 'approved', by: res.by ?? null, at: res.at ?? null };

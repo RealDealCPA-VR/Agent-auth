@@ -51,14 +51,18 @@ function serveSite(): http.Server {
   return server;
 }
 
-/** Simulate the human approver: poll the owner's MFA queue and approve with a code.
- * In the real demo this is a person tapping "approve" on their phone (the /mfa UI). */
-async function approveAsHuman(token: string, code: string): Promise<void> {
+/** Simulate the human approver: poll the owner's MFA queue and approve THE request
+ * matching `challengeId` with a code. In the real demo this is a person tapping
+ * "approve" on their phone (the /mfa UI). */
+async function approveAsHuman(token: string, challengeId: string, code: string): Promise<void> {
   for (let i = 0; i < 60; i += 1) {
     const res = await fetch(`${API}/v1/mfa`, { headers: { authorization: `Bearer ${token}` } });
-    const items = ((await res.json()) as { items?: Array<{ id: string }> }).items ?? [];
-    if (items[0]) {
-      await fetch(`${API}/v1/mfa/${items[0].id}/approve`, {
+    const items =
+      ((await res.json()) as { items?: Array<{ id: string; challengeId: string }> }).items ?? [];
+    // Match our own challenge — don't blindly approve items[0] (a stale/other row).
+    const mine = items.find((m) => m.challengeId === challengeId);
+    if (mine) {
+      await fetch(`${API}/v1/mfa/${mine.id}/approve`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: JSON.stringify({ code }),
@@ -123,7 +127,7 @@ async function main(): Promise<void> {
       submitSelector: '#verify',
       pollIntervalMs: 500,
     });
-    await approveAsHuman(session.token, '123456');
+    await approveAsHuman(session.token, summary.mfa.challengeId, '123456');
     console.log('MFA resolved →', JSON.stringify(await resolving)); // non-secret; no code
   }
 

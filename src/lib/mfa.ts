@@ -9,8 +9,8 @@ import { sealForPassport, openForPassport } from './vault.js';
  *   1. agent (SDK) → createMfaRequest()  — a pending, TTL-bounded request
  *   2. human owner  → approveMfaRequest() — seals the one-time code at rest
  *   3. agent (SDK) → fetchMfaCode()       — gets the code ONCE, then consumed
- * The code is stored ONLY sealed (passport DEK, AAD bound to the challenge) and
- * is NEVER logged. Fail-closed: consumed/expired/denied/revoked → no code.
+ * The code is stored ONLY sealed (passport DEK, AAD bound to the immutable request
+ * id) and is NEVER logged. Fail-closed: consumed/expired/denied/revoked → no code.
  */
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -184,23 +184,31 @@ export async function fetchMfaCode(
   }
   if (row.status === 'pending') return { status: 'pending' };
 
-  // status === 'approved': consume single-use (atomic guard against a race), then
-  // unseal the code if one was provided (push/webauthn approvals carry no code).
+  // status === 'approved'. UNSEAL FIRST so a transient unseal failure (KMS down,
+  // KEK rotation, tamper) does NOT permanently burn the one-time row: we only flip
+  // it to 'consumed' once a code is actually in hand. A failure leaves the row
+  // 'approved' and reports 'pending' so a retry (or recovery) can still succeed.
+  let code: string | null = null;
+  if (row.sealedCode) {
+    let buf: Buffer | null = null;
+    try {
+      buf = await openForPassport(passportId, row.sealedCode as SealedBox, aadFor(row.passportId, row.id));
+    } catch {
+      buf = null;
+    }
+    if (!buf) return { status: 'pending' }; // approved but not retrievable yet — do NOT consume
+    code = buf.toString('utf8');
+    buf.fill(0);
+  }
+
+  // Now consume single-use, atomically (guards against a concurrent double-fetch).
   const consumed = await db
     .update(schema.mfaRequests)
     .set({ status: 'consumed', consumedAt: new Date() })
     .where(and(eq(schema.mfaRequests.id, row.id), eq(schema.mfaRequests.status, 'approved')))
     .returning({ id: schema.mfaRequests.id });
-  if (consumed.length === 0) return { status: 'gone' };
+  if (consumed.length === 0) return { status: 'gone' }; // a concurrent poll already consumed it
 
-  let code: string | null = null;
-  if (row.sealedCode) {
-    const buf = await openForPassport(passportId, row.sealedCode as SealedBox, aadFor(row.passportId, row.id));
-    if (buf) {
-      code = buf.toString('utf8');
-      buf.fill(0);
-    }
-  }
   let by: string | null = null;
   if (row.decidedBy) {
     const [pr] = await db

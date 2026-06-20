@@ -419,7 +419,12 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       // (secret-bearing) and hold it itself (SDK getBrowserLoginPlan), rather than
       // letting the SDK helper apply it to a page and confine it. Gate it behind an
       // explicit, off-by-default scope so the unsafe affordance is opt-in per agent.
-      const raw = (req.query as { raw?: string } | undefined)?.raw === 'true';
+      // Robust parse: treat ANY presence of `raw` that isn't the literal "false" as
+      // raw=true (incl. a duplicated `?raw=true&raw=true` that Fastify parses to an
+      // array). A brittle `=== 'true'` would let an array evade the gate; here an
+      // ambiguous/duplicated raw applies the STRICTER scope check, never bypasses it.
+      const rawParam = (req.query as { raw?: unknown } | undefined)?.raw;
+      const raw = rawParam !== undefined && rawParam !== 'false' && rawParam !== false;
       if (raw && !hasScope(agent.scopes, 'vault:browser:raw')) {
         return deny(
           'missing scope: vault:browser:raw',

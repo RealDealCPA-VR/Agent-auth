@@ -680,8 +680,11 @@ class AgentAuthClient(_BaseClient):
         body: Dict[str, Any] = {
             "challengeId": challenge["challengeId"],
             "kind": challenge["kind"],
-            "promptText": challenge.get("promptText"),
         }
+        # Omit promptText when absent rather than sending JSON null — the server's
+        # zod schema is .optional() (accepts missing) but NOT .nullable(); matches TS.
+        if challenge.get("promptText") is not None:
+            body["promptText"] = challenge["promptText"]
         if channel_hint is not None:
             body["channelHint"] = channel_hint
         try:
@@ -692,7 +695,10 @@ class AgentAuthClient(_BaseClient):
             raise
         request_id = opened["requestId"]
 
-        max_polls = max(1, int(timeout_s / poll_interval_s) + 1)
+        # Wall-clock deadline (matches the TS SDK): give up after ~timeout_s of real
+        # time regardless of per-poll latency. The iteration cap is only a backstop.
+        deadline = time.monotonic() + timeout_s
+        max_polls = max(1, int(timeout_s / poll_interval_s) + 2)
         for _ in range(max_polls):
             try:
                 res = self._request(
@@ -723,6 +729,8 @@ class AgentAuthClient(_BaseClient):
                     if sub_sel:
                         page.click(sub_sel)
                 return {"resolved": True, "status": "approved", "by": res.get("by"), "at": res.get("at")}
+            if time.monotonic() >= deadline:
+                break
             sleeper(poll_interval_s)
         return {"resolved": False, "status": "timeout"}
 

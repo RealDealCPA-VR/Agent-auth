@@ -105,6 +105,22 @@ describe('raw browser-login plan is gated behind vault:browser:raw', () => {
     expect((await call(agent.apiKey, credId, false)).statusCode).toBe(200);
   });
 
+  it('a duplicated ?raw=true&raw=true still enforces vault:browser:raw (no gate bypass)', async () => {
+    const { token } = await registerAndLogin(app);
+    const passportId = await createPassport(app, token);
+    const agent = await issueAgent(app, token, passportId, ['vault:use', SCOPES_TARGET], 'safe-bot');
+    const credId = await setupCred(token, passportId);
+
+    // A repeated key parses to an array; a brittle `=== 'true'` would evade the gate.
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/vault/credentials/${credId}/browser-login?raw=true&raw=true`,
+      headers: auth(agent.apiKey),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('missing_scope');
+  });
+
   it('the issuer accepts vault:browser:raw as a valid scope', async () => {
     const { token } = await registerAndLogin(app);
     const passportId = await createPassport(app, token);

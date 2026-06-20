@@ -214,6 +214,33 @@ describe('MFA approval-queue handoff', () => {
     expect(res.json().error.code).toBe('invalid_request');
   });
 
+  it('does NOT burn an approved MFA row when the sealed code cannot be unsealed', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'c', kind: 'totp' })).json().requestId;
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200);
+
+    // Corrupt the sealed code's tag so unseal fails (tamper / wrong-key simulation).
+    const [row] = await db
+      .select({ sealed: schema.mfaRequests.sealedCode })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    const corrupted = { ...(row!.sealed as Record<string, unknown>), tag: 'AAAAAAAAAAAAAAAAAAAAAA==' };
+    await db.update(schema.mfaRequests).set({ sealedCode: corrupted }).where(eq(schema.mfaRequests.id, requestId));
+
+    // The code can't be unsealed → the row is NOT consumed (no burn): poll reports
+    // pending and the row stays 'approved' so a recovery/retry remains possible.
+    const poll = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(poll.statusCode).toBe(200);
+    expect(poll.json().status).toBe('pending');
+    const [after] = await db
+      .select({ status: schema.mfaRequests.status })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(after!.status).toBe('approved');
+  });
+
   it('requires vault:use to open an MFA request', async () => {
     const s = await setup(['vault:read', 'target:app.example.com']);
     const res = await reqMfa(s.agentKey, s.credId, { challengeId: 'c', kind: 'totp' });

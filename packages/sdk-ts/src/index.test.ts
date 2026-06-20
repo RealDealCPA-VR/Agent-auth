@@ -1193,6 +1193,32 @@ describe('AgentAuthClient.resolveMfa', () => {
     expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
   });
 
+  it('reports resolved:false (and does not submit) when the page can neither fill nor type', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { body: { status: 'approved', code: '123456', by: 'o@e.com', at: 't' } },
+    ]);
+    const clicks: string[] = [];
+    const page = {
+      goto: () => Promise.resolve(null),
+      evaluate: () => Promise.resolve(null),
+      click: (s: string) => {
+        clicks.push(s);
+        return Promise.resolve(null);
+      },
+      url: () => '',
+    } as unknown as BrowserPage;
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, {
+      inputSelector: '#otp',
+      submitSelector: '#go',
+      sleep: noSleep,
+    });
+    expect(res.resolved).toBe(false);
+    expect(res.status).toBe('approved');
+    expect(clicks).toHaveLength(0); // never submitted an empty field
+  });
+
   it('falls back to the challenge inputSelector/submitSelector when no opt is given', async () => {
     stubFetch([
       { body: { requestId: 'r', status: 'pending' } },

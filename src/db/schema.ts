@@ -228,8 +228,10 @@ export const mfaStatus = pgEnum('mfa_status', [
  * owner (or a delegate) approves it, sealing the one-time code. The agent fetches
  * the code exactly once (single-use, TTL-bounded), injects it into the browser
  * DOM, and the row is consumed. The code is stored ONLY in sealed form (passport
- * DEK, AAD bound to the challenge) and is NEVER written to the audit log — the
- * trail records challengeId/requestId/target/kind/approver/timestamps only.
+ * DEK) and is NEVER written to the audit log — the trail records
+ * challengeId/requestId/target/kind/approver/timestamps only. The sealed code's
+ * AAD is bound to the immutable request id (passport+row id), NOT the agent-supplied
+ * challengeId.
  */
 export const mfaRequests = pgTable(
   'mfa_requests',
