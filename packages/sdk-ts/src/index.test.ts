@@ -1240,6 +1240,22 @@ describe('AgentAuthClient.resolveMfa', () => {
     expect(events.some((e) => e.kind === 'fill')).toBe(false); // OTP never typed off-list
   });
 
+  it('an explicit empty allowedDomains override falls back to the challenge allowlist (not allow-all)', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { body: { status: 'approved', code: '123456', by: 'o@e.com', at: 't' } },
+    ]);
+    const { page, events } = makeFakePage({ currentUrl: 'https://evil.example.org/landing' });
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const ch: MfaChallenge = { ...challenge, allowedDomains: ['app.example.com'] };
+    // Passing [] must NOT widen to allow-all (Py parity): the restrictive challenge
+    // list still applies, so an off-list page fails closed.
+    await expect(
+      aa.resolveMfa(page, PLAN_UUID, ch, { inputSelector: '#otp', allowedDomains: [], sleep: noSleep }),
+    ).rejects.toThrow(/allowedDomains/);
+    expect(events.some((e) => e.kind === 'fill')).toBe(false);
+  });
+
   it('force-logs-out when a poll returns status revoked (session must not outlive a revoked agent)', async () => {
     stubFetch([{ body: { requestId: 'r', status: 'pending' } }, { body: { status: 'revoked' } }]);
     const { page, events } = makeFakePage();

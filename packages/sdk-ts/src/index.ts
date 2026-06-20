@@ -1292,7 +1292,14 @@ export class AgentAuthClient extends Transport {
           // left on the challenge page during the (up to 5-min) human-approval wait
           // and could have drifted off-list via a redirect. Fail closed — mirror the
           // form-fill guard so the OTP gets the same host-pinning the password does.
-          assertCurrentHostAllowed(page, opts.allowedDomains ?? challenge.allowedDomains);
+          // Treat an explicit empty override as "not provided" and fall back to the
+          // challenge allowlist (matches the Python SDK) — an opts.allowedDomains: []
+          // must not silently widen the OTP path to allow-all.
+          const otpAllow =
+            opts.allowedDomains && opts.allowedDomains.length > 0
+              ? opts.allowedDomains
+              : challenge.allowedDomains;
+          assertCurrentHostAllowed(page, otpAllow);
           let filled = false;
           if (page.fill) {
             await page.fill(inputSelector, res.code);

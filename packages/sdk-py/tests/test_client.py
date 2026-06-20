@@ -1323,6 +1323,25 @@ def test_detect_mfa_does_not_scrape_off_list_page_text():
     assert summary["mfa"]["allowedDomains"] == ["app.example.com"]
 
 
+def test_resolve_mfa_empty_override_falls_back_to_challenge_allowlist():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "approved", "code": "123456", "by": "o@e.com", "at": "t"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    page.goto("https://evil.example.org/landing")  # browser drifted off-list
+    challenge = {**_MFA_CHALLENGE, "allowedDomains": ["app.example.com"]}
+    # An explicit empty override must NOT widen to allow-all; challenge list still applies.
+    with pytest.raises(ValueError, match="allowedDomains"):
+        client.resolve_mfa(page, cid, challenge, input_selector="#otp",
+                           allowed_domains=[], sleep=lambda *_: None)
+    assert not any(c[0] == "fill" for c in page.calls)
+
+
 def test_resolve_mfa_revoked_forces_logout():
     cid = "11111111-1111-4111-8111-111111111111"
 
