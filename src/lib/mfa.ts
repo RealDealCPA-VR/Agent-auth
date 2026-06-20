@@ -431,12 +431,15 @@ export async function listPendingMfaFor(
 
 /**
  * Cancel all pending MFA requests for an agent (called on agent revocation —
- * fail-closed). Returns the cancelled rows so the caller can audit each one.
+ * fail-closed). Returns the cancelled rows so the caller can audit each one. Pass
+ * `exec` (the revoke transaction) so the cancel commits atomically with the agent
+ * deactivation and its audit.
  */
 export async function revokePendingMfaForAgent(
   agentId: string,
+  exec: Pick<typeof db, 'update'> = db,
 ): Promise<typeof schema.mfaRequests.$inferSelect[]> {
-  return db
+  return exec
     .update(schema.mfaRequests)
     .set({ status: 'revoked', decidedAt: new Date() })
     .where(and(eq(schema.mfaRequests.agentId, agentId), eq(schema.mfaRequests.status, 'pending')))

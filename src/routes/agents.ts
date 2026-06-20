@@ -180,6 +180,9 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         .limit(1);
       if (!row) return fail(req, reply, 404, 'not_found', 'agent not found');
 
+      // Deactivate the agent, cancel its pending MFA requests, and audit both —
+      // all in ONE transaction so revocation, MFA cancellation, and both audit
+      // rows commit (or roll back) atomically.
       await db.transaction(async (tx) => {
         await tx
           .update(schema.agents)
@@ -196,22 +199,24 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
           },
           tx,
         );
+        // Fail-closed: cancel any pending MFA so an approval can't resolve into a
+        // code after the agent is gone.
+        const cancelled = await revokePendingMfaForAgent(id, tx);
+        if (cancelled.length > 0) {
+          await audit(
+            {
+              action: 'mfa.revoked',
+              success: true,
+              principalId: req.human!.sub,
+              passportId: row.passportId,
+              agentId: id,
+              detail: { count: cancelled.length },
+              ip: req.ip,
+            },
+            tx,
+          );
+        }
       });
-
-      // Fail-closed: cancel any pending MFA requests for the revoked agent so an
-      // approval can't resolve into a code after the agent is gone.
-      const cancelled = await revokePendingMfaForAgent(id);
-      if (cancelled.length > 0) {
-        await audit({
-          action: 'mfa.revoked',
-          success: true,
-          principalId: req.human!.sub,
-          passportId: row.passportId,
-          agentId: id,
-          detail: { count: cancelled.length },
-          ip: req.ip,
-        });
-      }
 
       return reply.send({ id, revoked: true });
     },
