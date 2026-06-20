@@ -41,7 +41,7 @@ npx tsx examples/mfa-demo/demo.ts
 Expected output (note: a non-secret summary — **no `demo-password`, no `123456`**):
 
 ```
-browserLogin → {"mode":"form","target":"localhost:8799","url":"http://localhost:8799/login.html","authenticated":false,"filledFields":2,"submitted":false,"mfa":{"kind":"totp","promptText":"authenticator app","detectedAt":"...","challengeId":"...","inputSelector":"#otp","submitSelector":"#verify"}}
+browserLogin → {"mode":"form","target":"localhost","url":"http://localhost:8799/login.html","authenticated":false,"filledFields":2,"submitted":false,"mfa":{"kind":"totp","promptText":"authenticator app","detectedAt":"...","challengeId":"...","inputSelector":"#otp","submitSelector":"#verify"}}
 MFA challenge: authenticator app
 MFA resolved → {"resolved":true,"status":"approved","by":"mfa-demo+...@example.com","at":"..."}
 final page: http://localhost:8799/dashboard.html

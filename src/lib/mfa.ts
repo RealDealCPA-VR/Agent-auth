@@ -21,6 +21,19 @@ export const MFA_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const MFA_MAX_PENDING = 5; // concurrent pending requests
 export const MFA_MAX_PER_HOUR = 20; // created per rolling hour
 
+// Advisory-lock namespace for serializing MFA-request creation per (credential,
+// agent) so the count-then-insert rate-limit check is race-free. Distinct from
+// the audit (4242421) and oauth-refresh (4242422) namespaces so they never contend.
+const MFA_LOCK_NS = 4242423;
+
+/** Hash (credentialId, agentId) into the 32-bit advisory-lock key space. */
+function mfaLockKey(credentialId: string, agentId: string): number {
+  let h = 0;
+  const s = `${credentialId}:${agentId}`;
+  for (let i = 0; i < s.length; i += 1) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return h;
+}
+
 /** AAD for the sealed one-time code. Bound to the IMMUTABLE, server-issued unique
  * row id (and passport) — NOT the agent-supplied, non-unique challengeId — so the
  * sealed blob cannot be substituted between rows that happen to share a challengeId. */
@@ -55,49 +68,58 @@ export async function createMfaRequest(args: {
     .limit(1);
   if (!p) return { ok: false, reason: 'not_found' };
 
-  const now = Date.now();
   const scope = and(
     eq(schema.mfaRequests.agentId, args.agentId),
     eq(schema.mfaRequests.credentialId, args.credentialId),
   );
 
-  const pending = (
-    await db
-      .select({ value: count() })
-      .from(schema.mfaRequests)
-      .where(
-        and(
-          scope,
-          eq(schema.mfaRequests.status, 'pending'),
-          gt(schema.mfaRequests.expiresAt, new Date(now)),
-        ),
-      )
-  )[0]!.value;
-  if (pending >= MFA_MAX_PENDING) return { ok: false, reason: 'rate_limited' };
+  // Serialize the count-then-insert per (credential,agent) with a transaction-scoped
+  // advisory lock, so N concurrent requests can't all pass the check before any
+  // insert commits (the limit holds under concurrency).
+  return db.transaction(async (tx): Promise<CreateMfaResult> => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(${MFA_LOCK_NS}, ${mfaLockKey(args.credentialId, args.agentId)})`,
+    );
+    const now = Date.now();
 
-  const recent = (
-    await db
-      .select({ value: count() })
-      .from(schema.mfaRequests)
-      .where(and(scope, gt(schema.mfaRequests.createdAt, new Date(now - 3600_000))))
-  )[0]!.value;
-  if (recent >= MFA_MAX_PER_HOUR) return { ok: false, reason: 'rate_limited' };
+    const pending = (
+      await tx
+        .select({ value: count() })
+        .from(schema.mfaRequests)
+        .where(
+          and(
+            scope,
+            eq(schema.mfaRequests.status, 'pending'),
+            gt(schema.mfaRequests.expiresAt, new Date(now)),
+          ),
+        )
+    )[0]!.value;
+    if (pending >= MFA_MAX_PENDING) return { ok: false, reason: 'rate_limited' };
 
-  const [row] = await db
-    .insert(schema.mfaRequests)
-    .values({
-      challengeId: args.challengeId,
-      credentialId: args.credentialId,
-      passportId: args.passportId,
-      agentId: args.agentId,
-      principalId: p.principalId,
-      kind: args.kind,
-      channelHint: args.channelHint ?? null,
-      promptText: args.promptText ?? null,
-      expiresAt: new Date(now + MFA_TTL_MS),
-    })
-    .returning({ id: schema.mfaRequests.id });
-  return { ok: true, requestId: row!.id };
+    const recent = (
+      await tx
+        .select({ value: count() })
+        .from(schema.mfaRequests)
+        .where(and(scope, gt(schema.mfaRequests.createdAt, new Date(now - 3600_000))))
+    )[0]!.value;
+    if (recent >= MFA_MAX_PER_HOUR) return { ok: false, reason: 'rate_limited' };
+
+    const [row] = await tx
+      .insert(schema.mfaRequests)
+      .values({
+        challengeId: args.challengeId,
+        credentialId: args.credentialId,
+        passportId: args.passportId,
+        agentId: args.agentId,
+        principalId: p.principalId,
+        kind: args.kind,
+        channelHint: args.channelHint ?? null,
+        promptText: args.promptText ?? null,
+        expiresAt: new Date(now + MFA_TTL_MS),
+      })
+      .returning({ id: schema.mfaRequests.id });
+    return { ok: true, requestId: row!.id };
+  });
 }
 
 export type FetchMfaResult =
@@ -209,7 +231,10 @@ async function mayApprove(
 
 export type DecideMfaResult =
   | { ok: true; row: typeof schema.mfaRequests.$inferSelect }
-  | { ok: false; reason: 'not_found' | 'forbidden' | 'not_pending' };
+  | { ok: false; reason: 'not_found' | 'forbidden' | 'not_pending' | 'code_required' };
+
+/** Kinds that REQUIRE a one-time code at approval (vs push/webauthn which don't). */
+const CODE_KINDS = new Set(['otp', 'totp', 'sms', 'email']);
 
 /**
  * Human-side: approve a pending MFA request, sealing the one-time `code` (if any)
@@ -231,6 +256,10 @@ export async function approveMfaRequest(
   if (!(await mayApprove(row, principalId))) return { ok: false, reason: 'forbidden' };
   if (row.status !== 'pending' || row.expiresAt.getTime() <= Date.now())
     return { ok: false, reason: 'not_pending' };
+  // A code-kind challenge cannot be approved without a code — otherwise the agent
+  // would get an empty 'approved' and the login form would never advance.
+  if (CODE_KINDS.has(row.kind) && !(typeof code === 'string' && code.length > 0))
+    return { ok: false, reason: 'code_required' };
 
   let sealedCode: SealedBox | null = null;
   if (typeof code === 'string' && code.length > 0) {

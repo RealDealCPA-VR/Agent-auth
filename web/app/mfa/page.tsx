@@ -132,7 +132,10 @@ function MfaView() {
                       }
                     />
                   </div>
-                  <button disabled={busy} onClick={() => approve(r)}>
+                  <button
+                    disabled={busy || !(codes[r.id] ?? '').trim()}
+                    onClick={() => approve(r)}
+                  >
                     {busy ? 'Working…' : 'Approve'}
                   </button>
                   <button

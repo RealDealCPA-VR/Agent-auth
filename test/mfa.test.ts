@@ -194,6 +194,26 @@ describe('MFA approval-queue handoff', () => {
     expect(over.json().error.code).toBe('rate_limited');
   });
 
+  it('the pending limit holds under CONCURRENT requests (no check-then-insert race)', async () => {
+    const s = await setup();
+    const N = MFA_MAX_PENDING + 4;
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) => reqMfa(s.agentKey, s.credId, { challengeId: `c${i}`, kind: 'totp' })),
+    );
+    const ok = results.filter((r) => r.statusCode === 200).length;
+    const limited = results.filter((r) => r.statusCode === 429).length;
+    expect(ok).toBe(MFA_MAX_PENDING); // exactly the cap, not cap+concurrency
+    expect(limited).toBe(N - MFA_MAX_PENDING);
+  });
+
+  it('approving a code-kind (totp) request without a code is rejected (400)', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'c', kind: 'totp' })).json().requestId;
+    const res = await approveMfa(s.token, requestId); // no code typed
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_request');
+  });
+
   it('requires vault:use to open an MFA request', async () => {
     const s = await setup(['vault:read', 'target:app.example.com']);
     const res = await reqMfa(s.agentKey, s.credId, { challengeId: 'c', kind: 'totp' });

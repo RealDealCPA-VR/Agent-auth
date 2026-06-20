@@ -61,6 +61,8 @@ export async function mfaRoutes(app: FastifyInstance): Promise<void> {
         // forbidden (not owner/delegate) is surfaced as 404 so existence isn't leaked.
         if (result.reason === 'not_pending')
           return fail(req, reply, 409, 'conflict', 'mfa request is not pending');
+        if (result.reason === 'code_required')
+          return fail(req, reply, 400, 'invalid_request', 'a one-time code is required for this MFA kind');
         return fail(req, reply, 404, 'not_found', 'mfa request not found');
       }
       await audit({
