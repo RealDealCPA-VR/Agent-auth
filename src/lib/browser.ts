@@ -74,6 +74,12 @@ const httpUrl = z
 const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const HEADER_VALUE_RE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
+// Optional navigation allowlist (host globs like the target scopes). The SDK helper
+// refuses to navigate to a host not on this list — the browser analogue of proxy
+// host-pinning. Default (omitted) allows all (the plan url is already server
+// host-pinned to the credential target via specHostViolation).
+const allowedDomainsSchema = z.array(z.string().min(1).max(253)).max(50).optional();
+
 export const browserSpecSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('cookie'),
@@ -81,18 +87,21 @@ export const browserSpecSchema = z.discriminatedUnion('mode', [
     // string (the natural shape of a captured session cookie).
     cookies: z.array(cookieSpec).max(50).optional(),
     url: httpUrl.optional(),
+    allowedDomains: allowedDomainsSchema,
   }),
   z.object({
     mode: z.literal('header'),
     header: z.string().min(1).max(256).regex(HEADER_NAME_RE, 'invalid header name').optional(), // default Authorization
     prefix: z.string().max(64).regex(HEADER_VALUE_RE, 'invalid header prefix').optional(), // default 'Bearer '
     url: httpUrl.optional(),
+    allowedDomains: allowedDomainsSchema,
   }),
   z.object({
     mode: z.literal('localStorage'),
     origin: httpUrl, // the origin whose localStorage to populate
     key: z.string().min(1).max(256),
     url: httpUrl.optional(),
+    allowedDomains: allowedDomainsSchema,
   }),
   z.object({
     mode: z.literal('form'),
@@ -104,10 +113,7 @@ export const browserSpecSchema = z.discriminatedUnion('mode', [
     successUrlIncludes: z.string().max(2048).optional(),
     // Optional non-secret MFA hints, echoed into the plan for SDK-side detection.
     mfa: mfaSpec.optional(),
-    // Optional navigation allowlist (host globs like the target scopes). The SDK
-    // helper refuses to navigate the form flow to a host not on this list — the
-    // browser analogue of proxy-mode host-pinning. Default (omitted) allows all.
-    allowedDomains: z.array(z.string().min(1).max(253)).max(50).optional(),
+    allowedDomains: allowedDomainsSchema,
   }),
 ]);
 
@@ -131,9 +137,16 @@ export type BrowserFormAction =
   | { type: 'click'; selector: string };
 
 export type BrowserLoginPlan =
-  | { mode: 'cookie'; target: string; url: string; cookies: PlanCookie[] }
-  | { mode: 'header'; target: string; url: string; headers: Record<string, string> }
-  | { mode: 'localStorage'; target: string; origin: string; url: string; items: Record<string, string> }
+  | { mode: 'cookie'; target: string; url: string; cookies: PlanCookie[]; allowedDomains?: string[] }
+  | { mode: 'header'; target: string; url: string; headers: Record<string, string>; allowedDomains?: string[] }
+  | {
+      mode: 'localStorage';
+      target: string;
+      origin: string;
+      url: string;
+      items: Record<string, string>;
+      allowedDomains?: string[];
+    }
   | {
       mode: 'form';
       target: string;
@@ -414,7 +427,16 @@ export function buildBrowserPlan(args: {
           message: 'cookie value contains illegal characters (control chars or ";")',
         };
       }
-      return { ok: true, plan: { mode: 'cookie', target: host, url, cookies } };
+      return {
+        ok: true,
+        plan: {
+          mode: 'cookie',
+          target: host,
+          url,
+          cookies,
+          ...(spec.allowedDomains !== undefined ? { allowedDomains: spec.allowedDomains } : {}),
+        },
+      };
     }
     case 'header': {
       const url = spec.url ?? defaultUrl(args.target);
@@ -430,7 +452,13 @@ export function buildBrowserPlan(args: {
       }
       return {
         ok: true,
-        plan: { mode: 'header', target: host, url, headers: { [headerName]: headerValue } },
+        plan: {
+          mode: 'header',
+          target: host,
+          url,
+          headers: { [headerName]: headerValue },
+          ...(spec.allowedDomains !== undefined ? { allowedDomains: spec.allowedDomains } : {}),
+        },
       };
     }
     case 'localStorage': {
@@ -443,6 +471,7 @@ export function buildBrowserPlan(args: {
           origin: spec.origin,
           url,
           items: { [spec.key]: args.secret },
+          ...(spec.allowedDomains !== undefined ? { allowedDomains: spec.allowedDomains } : {}),
         },
       };
     }

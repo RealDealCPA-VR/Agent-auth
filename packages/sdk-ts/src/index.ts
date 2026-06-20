@@ -222,6 +222,8 @@ export type BrowserLoginPlan =
       /** Where to navigate after the cookies are set. */
       url: string;
       cookies: PlanCookie[];
+      /** Non-secret navigation allowlist (host globs); the SDK refuses off-list navigation. */
+      allowedDomains?: string[];
     }
   | {
       mode: 'header';
@@ -229,6 +231,7 @@ export type BrowserLoginPlan =
       url: string;
       /** Extra HTTP headers to send (values are secret). */
       headers: Record<string, string>;
+      allowedDomains?: string[];
     }
   | {
       mode: 'localStorage';
@@ -238,6 +241,7 @@ export type BrowserLoginPlan =
       url: string;
       /** localStorage entries to seed (values are secret). */
       items: Record<string, string>;
+      allowedDomains?: string[];
     }
   | {
       mode: 'form';
@@ -689,6 +693,14 @@ function urlHost(u: string): string {
   }
 }
 
+/** Throw if navigating to `url` is not permitted by `allow` (the navigation
+ * allowlist — browser host-pinning). An absent/empty list allows all. */
+function assertNavAllowed(url: string, allow: string[] | undefined): void {
+  if (allow && allow.length > 0 && !hostAllowed(urlHost(url), allow)) {
+    throw new TypeError(`AgentAuth SDK: navigation to ${urlHost(url)} is not in allowedDomains`);
+  }
+}
+
 /** True if `host` matches one of `allowed` (exact, `*` wildcard, or `*.suffix`). */
 function hostAllowed(host: string, allowed: string[]): boolean {
   return allowed.some((raw) => {
@@ -790,6 +802,7 @@ export async function applyBrowserLogin(
           'AgentAuth SDK: page supports neither context().addCookies (Playwright) nor setCookie (Puppeteer)',
         );
       }
+      assertNavAllowed(plan.url, plan.allowedDomains);
       await page.goto(plan.url);
       return {
         mode: plan.mode,
@@ -813,6 +826,7 @@ export async function applyBrowserLogin(
           'AgentAuth SDK: page supports neither context().setExtraHTTPHeaders nor setExtraHTTPHeaders',
         );
       }
+      assertNavAllowed(plan.url, plan.allowedDomains);
       await page.goto(plan.url);
       return {
         mode: plan.mode,
@@ -825,6 +839,7 @@ export async function applyBrowserLogin(
 
     case 'localStorage': {
       // Navigate first so the page's origin is loaded, then seed localStorage.
+      assertNavAllowed(plan.url, plan.allowedDomains);
       await page.goto(plan.url);
       await page.evaluate((items: Record<string, string>) => {
         for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v);
@@ -846,11 +861,7 @@ export async function applyBrowserLogin(
           case 'goto':
             // Navigation allowlist: refuse to steer the flow to an off-list host
             // (browser analogue of proxy-mode host-pinning). Default = allow all.
-            if (allow && allow.length > 0 && !hostAllowed(urlHost(action.url), allow)) {
-              throw new TypeError(
-                `AgentAuth SDK: navigation to ${urlHost(action.url)} is not in allowedDomains`,
-              );
-            }
+            assertNavAllowed(action.url, allow);
             await page.goto(action.url);
             break;
           case 'fill':

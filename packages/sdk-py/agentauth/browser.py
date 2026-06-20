@@ -44,6 +44,13 @@ def _host_allowed(host: str, allowed: List[str]) -> bool:
             return True
     return False
 
+
+def _assert_nav_allowed(url: str, allow: Any) -> None:
+    """Refuse navigation to a host not on the allowlist (browser host-pinning).
+    An absent/empty list allows all."""
+    if allow and not _host_allowed(_url_host(url), allow):
+        raise ValueError(f"navigation to {_url_host(url)} is not in allowedDomains")
+
 # The JS evaluated in the page to set localStorage items. Kept as a module
 # constant so tests can assert it is passed through unchanged.
 _LOCAL_STORAGE_JS = (
@@ -99,6 +106,7 @@ def _summary_base(plan: Mapping[str, Any]) -> Dict[str, Any]:
 def _apply_cookie(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     cookies: List[Mapping[str, Any]] = list(plan.get("cookies") or [])
     page.context.add_cookies(cookies)
+    _assert_nav_allowed(plan["url"], plan.get("allowedDomains"))
     page.goto(plan["url"])
     summary = _summary_base(plan)
     summary["authenticated"] = True
@@ -110,6 +118,7 @@ def _apply_cookie(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
 def _apply_header(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     headers: Mapping[str, str] = plan.get("headers") or {}
     page.context.set_extra_http_headers(dict(headers))
+    _assert_nav_allowed(plan["url"], plan.get("allowedDomains"))
     page.goto(plan["url"])
     summary = _summary_base(plan)
     summary["authenticated"] = True
@@ -121,6 +130,7 @@ def _apply_header(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
 def _apply_local_storage(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     items: Mapping[str, str] = plan.get("items") or {}
     # Must navigate to the origin first so localStorage is for the right document.
+    _assert_nav_allowed(plan["url"], plan.get("allowedDomains"))
     page.goto(plan["url"])
     page.evaluate(_LOCAL_STORAGE_JS, dict(items))
     summary = _summary_base(plan)
@@ -212,10 +222,7 @@ def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
         kind = action.get("type")
         if kind == "goto":
             # Navigation allowlist (browser analogue of proxy host-pinning).
-            if allow and not _host_allowed(_url_host(action["url"]), allow):
-                raise ValueError(
-                    f"navigation to {_url_host(action['url'])} is not in allowedDomains"
-                )
+            _assert_nav_allowed(action["url"], allow)
             page.goto(action["url"])
         elif kind == "fill":
             page.fill(action["selector"], action["value"])

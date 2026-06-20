@@ -1263,6 +1263,27 @@ describe('browser hardening (Phase 4)', () => {
     expect(summary.authenticated).toBe(true);
   });
 
+  it('cookie/header/localStorage modes also enforce allowedDomains on the plan url', async () => {
+    const cookiePlan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'app.example.com',
+      url: 'https://evil.example.org/',
+      cookies: [{ name: 's', value: 'SECRET', path: '/' }],
+      allowedDomains: ['app.example.com'],
+    };
+    await expect(applyBrowserLogin(makeFakePage().page, cookiePlan)).rejects.toThrow(/allowedDomains/);
+
+    const lsPlan: BrowserLoginPlan = {
+      mode: 'localStorage',
+      target: 'app.example.com',
+      origin: 'https://app.example.com',
+      url: 'https://evil.example.org/',
+      items: { t: 'SECRET' },
+      allowedDomains: ['app.example.com'],
+    };
+    await expect(applyBrowserLogin(makeFakePage().page, lsPlan)).rejects.toThrow(/allowedDomains/);
+  });
+
   it('browserLogin force-logs-out the browser when the agent is revoked (401)', async () => {
     stubFetch([{ status: 401, body: { error: { code: 'unauthorized', message: 'revoked' } } }]);
     const { page, events } = makeFakePage();

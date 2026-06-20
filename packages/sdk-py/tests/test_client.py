@@ -1191,6 +1191,16 @@ def test_form_allows_subdomain_within_allowed_domains():
     assert summary["authenticated"] is True
 
 
+def test_cookie_mode_enforces_allowed_domains():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "cookie", "target": "app.example.com", "url": "https://evil.example.org/",
+            "cookies": [{"name": "s", "value": "SECRET", "path": "/"}],
+            "allowedDomains": ["app.example.com"]}
+    with pytest.raises(ValueError, match="allowedDomains"):
+        apply_browser_login(FakePage(), plan)
+
+
 def test_browser_login_force_logout_on_revoked_401():
     cid = "11111111-1111-4111-8111-111111111111"
 

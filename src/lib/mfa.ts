@@ -295,7 +295,7 @@ async function mayApprove(
 
 export type DecideMfaResult =
   | { ok: true; row: typeof schema.mfaRequests.$inferSelect }
-  | { ok: false; reason: 'not_found' | 'forbidden' | 'not_pending' | 'code_required' };
+  | { ok: false; reason: 'not_found' | 'forbidden' | 'not_pending' | 'code_required' | 'seal_failed' };
 
 /** Kinds that REQUIRE a one-time code at approval (vs push/webauthn which don't). */
 const CODE_KINDS = new Set(['otp', 'totp', 'sms', 'email']);
@@ -335,6 +335,10 @@ export async function approveMfaRequest(
       codeBuf.fill(0);
     }
   }
+  // Fail closed: never commit a code-kind 'approved' with no sealed code (a
+  // transient DEK-load failure at seal time would otherwise yield a silent
+  // empty approval and burn the one-time row at fetch).
+  if (CODE_KINDS.has(row.kind) && sealedCode === null) return { ok: false, reason: 'seal_failed' };
 
   // Decision + audit commit together: an audit-write failure rolls the approval back.
   return db.transaction(async (tx): Promise<DecideMfaResult> => {

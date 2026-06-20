@@ -462,6 +462,20 @@ describe('browser-login (plan building)', () => {
     });
   });
 
+  it('echoes allowedDomains into a cookie plan (allowlist available to all modes)', async () => {
+    const { token, passportId, browserLogin } = await setup();
+    const cred = await deposit(app, token, passportId, {
+      target: 'app.example.com',
+      label: 'session',
+      type: 'cookie',
+      secret: 'sid=abc',
+      metadata: { browser: { mode: 'cookie', allowedDomains: ['app.example.com'] } },
+    });
+    const res = await browserLogin(cred.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().allowedDomains).toEqual(['app.example.com']);
+  });
+
   it('404 for an unknown credential id', async () => {
     const { browserLogin } = await setup();
     const res = await browserLogin('00000000-0000-4000-8000-000000000000');

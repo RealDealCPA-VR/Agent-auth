@@ -62,6 +62,8 @@ export async function mfaRoutes(app: FastifyInstance): Promise<void> {
           return fail(req, reply, 409, 'conflict', 'mfa request is not pending');
         if (result.reason === 'code_required')
           return fail(req, reply, 400, 'invalid_request', 'a one-time code is required for this MFA kind');
+        if (result.reason === 'seal_failed')
+          return fail(req, reply, 500, 'internal', 'failed to seal the MFA code; try again');
         return fail(req, reply, 404, 'not_found', 'mfa request not found');
       }
       // mfa.approved is audited atomically inside approveMfaRequest's transaction.
