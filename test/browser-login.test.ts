@@ -428,6 +428,40 @@ describe('browser-login (plan building)', () => {
     expect(actions).toContain('credential.browser');
   });
 
+  it('echoes a configured metadata.browser.mfa block into the form plan', async () => {
+    const { token, passportId, browserLogin } = await setup();
+    const cred = await deposit(app, token, passportId, {
+      target: 'app.example.com',
+      label: 'login',
+      type: 'password',
+      secret: 's3cr3t',
+      metadata: {
+        username: 'alice',
+        browser: {
+          mode: 'form',
+          url: 'https://app.example.com/login',
+          fields: [
+            { selector: '#user', valueFrom: 'username' },
+            { selector: '#pass', valueFrom: 'secret' },
+          ],
+          submitSelector: '#go',
+          successUrlIncludes: '/dashboard',
+          mfa: { kind: 'totp', detectBy: 'auto', channelHint: 'authenticator app', inputSelector: '#otp' },
+        },
+      },
+    });
+    const res = await browserLogin(cred.id);
+    expect(res.statusCode).toBe(200);
+    const plan = res.json();
+    expect(plan.mode).toBe('form');
+    expect(plan.mfa).toEqual({
+      kind: 'totp',
+      detectBy: 'auto',
+      channelHint: 'authenticator app',
+      inputSelector: '#otp',
+    });
+  });
+
   it('404 for an unknown credential id', async () => {
     const { browserLogin } = await setup();
     const res = await browserLogin('00000000-0000-4000-8000-000000000000');

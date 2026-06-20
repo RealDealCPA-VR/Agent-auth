@@ -52,6 +52,10 @@ function PassportDetailView({ passportId }: { passportId: string }) {
   const [formSubmitSelector, setFormSubmitSelector] = useState('');
   const [formSuccessIncludes, setFormSuccessIncludes] = useState('');
   const [formUsername, setFormUsername] = useState('');
+  // Optional MFA spec (form mode): non-secret hints stored in metadata.browser.mfa.
+  const [formMfaKind, setFormMfaKind] = useState('');
+  const [formMfaChannelHint, setFormMfaChannelHint] = useState('');
+  const [formMfaInputSelector, setFormMfaInputSelector] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<unknown>(null);
@@ -155,6 +159,15 @@ function PassportDetailView({ passportId }: { passportId: string }) {
           if (submitSel) browser.submitSelector = submitSel;
           const successInc = formSuccessIncludes.trim();
           if (successInc) browser.successUrlIncludes = successInc;
+          // Optional MFA hints (non-secret) for SDK-side detection/resolution.
+          if (formMfaKind) {
+            const mfa: Record<string, unknown> = { kind: formMfaKind };
+            const hint = formMfaChannelHint.trim();
+            const otpSel = formMfaInputSelector.trim();
+            if (hint) mfa.channelHint = hint;
+            if (otpSel) mfa.inputSelector = otpSel;
+            browser.mfa = mfa;
+          }
           // The form references metadata.username for the username field.
           if (uname) metadataObj.username = uname;
           break;
@@ -482,6 +495,48 @@ function PassportDetailView({ passportId }: { passportId: string }) {
                     placeholder="/dashboard"
                     value={formSuccessIncludes}
                     onChange={(e) => setFormSuccessIncludes(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="row">
+                <div className="field">
+                  <label htmlFor="browser-form-mfa-kind">
+                    MFA kind (optional — enables human-in-the-loop MFA)
+                  </label>
+                  <select
+                    id="browser-form-mfa-kind"
+                    value={formMfaKind}
+                    onChange={(e) => setFormMfaKind(e.target.value)}
+                  >
+                    <option value="">none</option>
+                    <option value="totp">totp (authenticator app)</option>
+                    <option value="otp">otp</option>
+                    <option value="sms">sms</option>
+                    <option value="email">email</option>
+                    <option value="push">push</option>
+                    <option value="webauthn">webauthn</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="browser-form-mfa-hint">
+                    MFA channel hint (shown to approver, optional)
+                  </label>
+                  <input
+                    id="browser-form-mfa-hint"
+                    placeholder="code from your authenticator app"
+                    value={formMfaChannelHint}
+                    onChange={(e) => setFormMfaChannelHint(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="browser-form-mfa-sel">
+                    MFA code input selector (optional)
+                  </label>
+                  <input
+                    id="browser-form-mfa-sel"
+                    placeholder="#otp"
+                    value={formMfaInputSelector}
+                    onChange={(e) => setFormMfaInputSelector(e.target.value)}
                   />
                 </div>
               </div>

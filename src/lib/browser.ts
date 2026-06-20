@@ -45,6 +45,22 @@ const formField = z.union([
   z.object({ selector: z.string().min(1).max(1024), value: z.string().max(4096) }),
 ]);
 
+/**
+ * Optional, NON-SECRET MFA hints for a form login. Travels in metadata.browser.mfa
+ * and is echoed verbatim into the form plan so the SDK helper can detect an MFA
+ * challenge after submit and (Phase 2) escalate it for human resolution. Carries
+ * no secret — only the kind, how to detect it, a channel hint shown to the
+ * approver ("code sent to ••••1234"), and the selectors to fill/submit the code.
+ */
+const mfaSpec = z.object({
+  kind: z.enum(['otp', 'totp', 'sms', 'email', 'push', 'webauthn']).optional(),
+  detectBy: z.enum(['url', 'text', 'input', 'auto']).optional(),
+  channelHint: z.string().max(256).optional(),
+  inputSelector: z.string().min(1).max(1024).optional(),
+  submitSelector: z.string().min(1).max(1024).optional(),
+});
+export type MfaSpec = z.infer<typeof mfaSpec>;
+
 const httpUrl = z
   .string()
   .max(2048)
@@ -86,6 +102,8 @@ export const browserSpecSchema = z.discriminatedUnion('mode', [
     // Optional substring the post-login URL should contain — advisory, for the
     // SDK helper to verify success. Never affects plan building.
     successUrlIncludes: z.string().max(2048).optional(),
+    // Optional non-secret MFA hints, echoed into the plan for SDK-side detection.
+    mfa: mfaSpec.optional(),
   }),
 ]);
 
@@ -118,6 +136,8 @@ export type BrowserLoginPlan =
       url: string;
       actions: BrowserFormAction[];
       successUrlIncludes?: string;
+      // Non-secret MFA hints (echoed from metadata.browser.mfa) for SDK detection.
+      mfa?: MfaSpec;
     };
 
 export type BuildPlanResult =
@@ -443,6 +463,7 @@ export function buildBrowserPlan(args: {
           url: spec.url,
           actions,
           ...(spec.successUrlIncludes !== undefined ? { successUrlIncludes: spec.successUrlIncludes } : {}),
+          ...(spec.mfa !== undefined ? { mfa: spec.mfa } : {}),
         },
       };
     }

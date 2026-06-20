@@ -825,7 +825,9 @@ interface PageEvent {
   arg?: unknown;
 }
 
-function makeFakePage(opts: { puppeteer?: boolean; currentUrl?: string } = {}): {
+function makeFakePage(
+  opts: { puppeteer?: boolean; currentUrl?: string; html?: string; postSubmitUrl?: string } = {},
+): {
   page: BrowserPage;
   events: PageEvent[];
   store: Record<string, string>;
@@ -840,6 +842,7 @@ function makeFakePage(opts: { puppeteer?: boolean; currentUrl?: string } = {}): 
       events.push({ kind: 'goto', arg: url });
       return Promise.resolve(null);
     },
+    content: () => Promise.resolve(opts.html ?? ''),
     evaluate: <R, A>(fn: (arg: A) => R, arg: A): Promise<R> => {
       // Simulate the localStorage seeding by running the fn against a shim.
       events.push({ kind: 'evaluate', arg });
@@ -855,6 +858,8 @@ function makeFakePage(opts: { puppeteer?: boolean; currentUrl?: string } = {}): 
     },
     click: (selector: string) => {
       events.push({ kind: 'click', arg: selector });
+      // Simulate the post-submit navigation (success or MFA redirect) if given.
+      if (opts.postSubmitUrl !== undefined) current = opts.postSubmitUrl;
       return Promise.resolve(null);
     },
     url: () => current,
@@ -919,6 +924,7 @@ describe('applyBrowserLogin / browserLogin', () => {
       mode: 'cookie',
       target: 'github.com',
       url: 'https://github.com/dashboard',
+      authenticated: true,
       cookieNames: ['session'],
     });
     assertNoSecret(summary, ['SECRET_COOKIE']);
@@ -953,6 +959,7 @@ describe('applyBrowserLogin / browserLogin', () => {
       mode: 'header',
       target: 'api.example.com',
       url: 'https://api.example.com',
+      authenticated: true,
       headerNames: ['authorization', 'x-api-key'],
     });
     assertNoSecret(summary, ['SECRET_TOKEN', 'SECRET_KEY']);
@@ -974,6 +981,7 @@ describe('applyBrowserLogin / browserLogin', () => {
       mode: 'localStorage',
       target: 'app.example.com',
       url: 'https://app.example.com',
+      authenticated: true,
       storageKeys: ['token', 'refresh'],
     });
     assertNoSecret(summary, ['SECRET_LS', 'SECRET_RS']);
@@ -1000,6 +1008,7 @@ describe('applyBrowserLogin / browserLogin', () => {
       mode: 'form',
       target: 'site.example.com',
       url: 'https://site.example.com/login',
+      authenticated: true,
       filledFields: 2,
       submitted: true,
     });
@@ -1034,7 +1043,74 @@ describe('applyBrowserLogin / browserLogin', () => {
     const summary = await aa.browserLogin(page, PLAN_UUID);
     expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${PLAN_UUID}/browser-login`);
     expect(events.map((e) => e.kind)).toEqual(['addCookies', 'goto']);
+    expect(summary.authenticated).toBe(true);
     expect(summary.cookieNames).toEqual(['session']);
     assertNoSecret(summary, ['SECRET_COOKIE']);
+  });
+
+  it('form mode: detects an MFA challenge by URL and returns it (non-secret)', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [
+        { type: 'fill', selector: '#user', value: 'alice' },
+        { type: 'fill', selector: '#pass', value: 'SECRET_PW' },
+        { type: 'click', selector: '#submit' },
+      ],
+      successUrlIncludes: '/dashboard',
+      mfa: { kind: 'totp', channelHint: 'code from your authenticator app' },
+    };
+    const { page } = makeFakePage({
+      postSubmitUrl: 'https://site.example.com/mfa/challenge',
+      html: '<form><input type="password"></form>',
+    });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.authenticated).toBe(false);
+    expect(summary.mfa?.kind).toBe('totp');
+    expect(summary.mfa?.promptText).toBe('code from your authenticator app');
+    expect(typeof summary.mfa?.challengeId).toBe('string');
+    expect(typeof summary.mfa?.detectedAt).toBe('string');
+    assertNoSecret(summary, ['SECRET_PW', 'alice']);
+  });
+
+  it('form mode: detects an MFA challenge by page text + input when the URL is unremarkable', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [
+        { type: 'fill', selector: '#pass', value: 'SECRET_PW' },
+        { type: 'click', selector: '#go' },
+      ],
+      successUrlIncludes: '/home',
+    };
+    const html =
+      '<h1>Verification code</h1><p>Enter the 6-digit code sent to ' +
+      '•••1234</p><input autocomplete="one-time-code">';
+    const { page } = makeFakePage({ postSubmitUrl: 'https://site.example.com/step2', html });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.authenticated).toBe(false);
+    expect(summary.mfa).toBeDefined();
+    expect(summary.mfa?.kind).toBe('otp'); // default when spec omits kind
+    expect(summary.mfa?.promptText.toLowerCase()).toContain('code');
+  });
+
+  it('form mode: reaching successUrlIncludes is authenticated with no mfa', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [
+        { type: 'fill', selector: '#pass', value: 'SECRET_PW' },
+        { type: 'click', selector: '#go' },
+      ],
+      successUrlIncludes: '/dashboard',
+    };
+    const { page } = makeFakePage({ postSubmitUrl: 'https://site.example.com/dashboard' });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.authenticated).toBe(true);
+    expect(summary.mfa).toBeUndefined();
+    expect(summary.submitted).toBe(true);
   });
 });

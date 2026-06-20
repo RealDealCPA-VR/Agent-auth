@@ -247,7 +247,44 @@ export type BrowserLoginPlan =
       actions: BrowserFormAction[];
       /** If set, the login is considered submitted once the URL includes this. */
       successUrlIncludes?: string;
+      /** Non-secret MFA hints (echoed from `metadata.browser.mfa`) for detection. */
+      mfa?: MfaSpec;
     };
+
+/** The kind of MFA challenge a login may hit. */
+export type MfaKind = 'otp' | 'totp' | 'sms' | 'email' | 'push' | 'webauthn';
+
+/**
+ * Non-secret MFA hints configured per credential (`metadata.browser.mfa`) and
+ * echoed into a form plan. Carries no secret — only how to detect and where to
+ * fill the eventual code.
+ */
+export interface MfaSpec {
+  kind?: MfaKind;
+  /** Override the detection strategy; `auto` (default) tries url/text/input. */
+  detectBy?: 'url' | 'text' | 'input' | 'auto';
+  /** A non-secret hint shown to the human approver, e.g. "code sent to ••••1234". */
+  channelHint?: string;
+  /** Selector of the code input (for Phase-2 injection / auto-detect if absent). */
+  inputSelector?: string;
+  /** Selector to submit the code (defaults to the form submit). */
+  submitSelector?: string;
+}
+
+/**
+ * A detected MFA challenge. **Non-secret** — `promptText` is what the page says
+ * ("Enter the 6-digit code sent to ••••1234"), safe to surface to an LLM and to
+ * log. The browser is left on the challenge page.
+ */
+export interface MfaChallenge {
+  kind: MfaKind;
+  /** The non-secret prompt the page shows the user. */
+  promptText: string;
+  /** ISO-8601 timestamp of detection. */
+  detectedAt: string;
+  /** Client-issued challenge id (Phase 2 ties it to a server approval request). */
+  challengeId: string;
+}
 
 /**
  * A non-secret summary of what {@link applyBrowserLogin} / {@link AgentAuthClient.browserLogin}
@@ -258,6 +295,14 @@ export interface BrowserLoginSummary {
   mode: BrowserLoginPlan['mode'];
   target: string;
   url: string;
+  /**
+   * Whether the page appears authenticated. True for cookie/header/localStorage
+   * (state applied) and for a form that reached its success URL with no MFA;
+   * false when an MFA challenge was detected (see {@link mfa}).
+   */
+  authenticated: boolean;
+  /** Set when a form login hit an MFA challenge — non-secret, browser left on it. */
+  mfa?: MfaChallenge;
   /** Names of the cookies that were set (cookie mode). */
   cookieNames?: string[];
   /** Names of the headers that were set (header mode). */
@@ -297,6 +342,8 @@ export interface BrowserPage {
   click(selector: string): Promise<unknown>;
   /** Current page URL (used to detect form-login success). */
   url?: () => string;
+  /** Full page HTML (Playwright + Puppeteer `page.content()`) — used for MFA detection. */
+  content?: () => Promise<string>;
 }
 
 /** The subset of a Playwright `BrowserContext` the SDK uses. */
@@ -569,6 +616,61 @@ function defaultMessageFor(status: number): string {
 
 // --- Browser-login application ----------------------------------------------
 
+// MFA challenge detection heuristics — all operate on NON-secret signals (the
+// page URL and HTML structure), never on the secret. Tunable via the credential's
+// metadata.browser.mfa.detectBy.
+const MFA_URL_RE = /(?:mfa|2fa|twofactor|two-factor|otp|\/verify|\/challenge|verification)/i;
+const MFA_TEXT_RE =
+  /(enter the[^.<]{0,40}code|verification code|two-factor|one-time code|6-digit code|approve[^.<]{0,20}sign-?in|authenticator app)/i;
+const MFA_INPUT_RE =
+  /autocomplete\s*=\s*["']one-time-code["']|inputmode\s*=\s*["']numeric["']|maxlength\s*=\s*["']6["']/i;
+
+/** A non-secret, best-effort prompt string pulled from the page's visible text. */
+function extractPromptText(html: string): string | undefined {
+  const text = html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const m =
+    text.match(/[^.<>]*?(enter the[^.<>]{0,40}code|verification code|one-time code|6-digit code|two-factor)[^.<>]*/i) ??
+    text.match(/.{0,60}(authenticator|verification|one-time code).{0,60}/i);
+  const snippet = m?.[0]?.trim();
+  return snippet ? snippet.slice(0, 160) : undefined;
+}
+
+/** A client-side challenge id (Phase 2 replaces this with a server request id). */
+function genChallengeId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return `mfa_${c?.randomUUID ? c.randomUUID() : Math.abs(Date.now() ^ (Math.random() * 1e9)).toString(36)}`;
+}
+
+/**
+ * Detect an MFA challenge after a form submit using non-secret page signals.
+ * Returns a {@link MfaChallenge} (browser left on the page) or undefined. The
+ * detection strategy honours `spec.detectBy` (default `auto` = url|text|input).
+ */
+async function detectMfaChallenge(
+  page: BrowserPage,
+  currentUrl: string,
+  spec: MfaSpec | undefined,
+): Promise<MfaChallenge | undefined> {
+  const html = (await page.content?.()) ?? '';
+  const urlHit = MFA_URL_RE.test(currentUrl);
+  const textHit = MFA_TEXT_RE.test(html);
+  const inputHit = MFA_INPUT_RE.test(html);
+  const by = spec?.detectBy ?? 'auto';
+  const detected =
+    by === 'url' ? urlHit : by === 'text' ? textHit : by === 'input' ? inputHit : urlHit || textHit || inputHit;
+  if (!detected) return undefined;
+  return {
+    kind: spec?.kind ?? 'otp',
+    promptText: spec?.channelHint ?? extractPromptText(html) ?? 'Multi-factor authentication required',
+    detectedAt: new Date().toISOString(),
+    challengeId: genChallengeId(),
+  };
+}
+
 /**
  * Apply a {@link BrowserLoginPlan} to a browser `page` and return a non-secret
  * {@link BrowserLoginSummary}. Most callers should use
@@ -607,6 +709,7 @@ export async function applyBrowserLogin(
         mode: plan.mode,
         target: plan.target,
         url: plan.url,
+        authenticated: true,
         cookieNames: plan.cookies.map((c) => c.name),
       };
     }
@@ -629,6 +732,7 @@ export async function applyBrowserLogin(
         mode: plan.mode,
         target: plan.target,
         url: plan.url,
+        authenticated: true,
         headerNames: Object.keys(plan.headers),
       };
     }
@@ -643,6 +747,7 @@ export async function applyBrowserLogin(
         mode: plan.mode,
         target: plan.target,
         url: plan.url,
+        authenticated: true,
         storageKeys: Object.keys(plan.items),
       };
     }
@@ -675,17 +780,35 @@ export async function applyBrowserLogin(
         }
       }
       // Best-effort success detection: did we land on a URL that matches?
+      const current = page.url?.();
       let submitted: boolean | undefined;
       if (plan.successUrlIncludes !== undefined) {
-        const current = page.url?.();
         submitted = typeof current === 'string' ? current.includes(plan.successUrlIncludes) : false;
       }
+
+      // Resolve the outcome. If we already reached the success URL, we're in;
+      // otherwise look for an MFA challenge before declaring success/failure.
+      let authenticated: boolean;
+      let mfa: MfaChallenge | undefined;
+      if (submitted === true) {
+        authenticated = true;
+      } else {
+        mfa = await detectMfaChallenge(page, current ?? '', plan.mfa);
+        if (mfa) authenticated = false;
+        // No success-URL configured and no MFA seen → best-effort success (the form
+        // was submitted and no challenge appeared). With a success-URL configured
+        // but unmatched and no MFA, treat it as not-yet-authenticated.
+        else authenticated = plan.successUrlIncludes === undefined;
+      }
+
       return {
         mode: plan.mode,
         target: plan.target,
         url: plan.url,
+        authenticated,
         filledFields,
         ...(submitted !== undefined ? { submitted } : {}),
+        ...(mfa ? { mfa } : {}),
       };
     }
 

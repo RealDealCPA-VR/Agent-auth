@@ -852,10 +852,14 @@ class FakePage:
         self.calls: List[Any] = []
         self._url = ""
         self.post_submit_url: Any = None
+        self.html = ""
 
     @property
     def url(self) -> str:
         return self._url
+
+    def content(self) -> str:
+        return self.html
 
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
@@ -904,6 +908,7 @@ def test_browser_login_cookie_mode_applies_and_summary_has_no_secret():
     assert ("goto", "https://github.com/home") in page.calls
     assert summary == {"mode": "cookie", "target": "github.com",
                        "url": "https://github.com/home",
+                       "authenticated": True,
                        "cookie_names": ["sid", "csrf"]}
     _assert_no_secret(summary, "SUPERSECRET")
     _assert_no_secret(summary, "TOKEN2")
@@ -921,6 +926,7 @@ def test_browser_login_header_mode_applies_and_summary_has_no_secret():
     assert ("goto", "https://api.x.com/") in page.calls
     assert summary == {"mode": "header", "target": "api.x.com",
                        "url": "https://api.x.com/",
+                       "authenticated": True,
                        "header_names": ["Authorization", "X-Key"]}
     _assert_no_secret(summary, "SECRETVAL")
     _assert_no_secret(summary, "K2")
@@ -943,6 +949,7 @@ def test_browser_login_local_storage_mode_applies_and_summary_has_no_secret():
     assert arg == plan["items"]
     assert summary == {"mode": "localStorage", "target": "app.x.com",
                        "url": "https://app.x.com/",
+                       "authenticated": True,
                        "storage_keys": ["token", "rt"]}
     _assert_no_secret(summary, "LSSECRET")
     _assert_no_secret(summary, "REFRESHSECRET")
@@ -975,10 +982,74 @@ def test_browser_login_form_mode_applies_and_summary_has_no_secret():
     # URL contains it.
     assert summary == {"mode": "form", "target": "login.x.com",
                        "url": "https://login.x.com/",
+                       "authenticated": True,
                        "filled_fields": 2,
                        "submitted": True}
     _assert_no_secret(summary, "PWSECRET")
     _assert_no_secret(summary, "alice")
+
+
+def test_browser_login_form_detects_mfa_by_url(monkeypatch):
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",
+            "actions": [
+                {"type": "fill", "selector": "#user", "value": "alice"},
+                {"type": "fill", "selector": "#pass", "value": "PWSECRET"},
+                {"type": "click", "selector": "#submit"},
+            ],
+            "successUrlIncludes": "/dashboard",
+            "mfa": {"kind": "totp", "channelHint": "code from your authenticator app"}}
+    page = FakePage()
+    page.post_submit_url = "https://site.x.com/mfa/challenge"
+    page.html = "<form><input type='password'></form>"
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert summary["authenticated"] is False
+    assert summary["mfa"]["kind"] == "totp"
+    assert summary["mfa"]["promptText"] == "code from your authenticator app"
+    assert isinstance(summary["mfa"]["challengeId"], str)
+    assert isinstance(summary["mfa"]["detectedAt"], str)
+    _assert_no_secret(summary, "PWSECRET")
+    _assert_no_secret(summary, "alice")
+
+
+def test_browser_login_form_detects_mfa_by_text_and_input():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",
+            "actions": [
+                {"type": "fill", "selector": "#pass", "value": "PWSECRET"},
+                {"type": "click", "selector": "#go"},
+            ],
+            "successUrlIncludes": "/home"}
+    page = FakePage()
+    page.post_submit_url = "https://site.x.com/step2"
+    page.html = ("<h1>Verification code</h1><p>Enter the 6-digit code sent to "
+                 "***1234</p><input autocomplete='one-time-code'>")
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert summary["authenticated"] is False
+    assert summary["mfa"]["kind"] == "otp"  # default when spec omits kind
+    assert "code" in summary["mfa"]["promptText"].lower()
+
+
+def test_browser_login_form_success_url_is_authenticated_no_mfa():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "site.x.com", "url": "https://site.x.com/login",
+            "actions": [
+                {"type": "fill", "selector": "#pass", "value": "PWSECRET"},
+                {"type": "click", "selector": "#go"},
+            ],
+            "successUrlIncludes": "/dashboard"}
+    page = FakePage()
+    page.post_submit_url = "https://site.x.com/dashboard"
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert summary["authenticated"] is True
+    assert "mfa" not in summary
+    assert summary["submitted"] is True
 
 
 def test_browser_login_form_mode_omits_submitted_without_success_hint():
