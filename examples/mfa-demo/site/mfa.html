@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verification — IRS e-Services (mock)</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; max-width: 420px; margin: 4rem auto; }
+      input { width: 100%; padding: 0.5rem; margin: 0.25rem 0 1rem; }
+      button { padding: 0.5rem 1rem; }
+    </style>
+  </head>
+  <body>
+    <!-- The URL (mfa.html), the heading text ("Verification code" / "6-digit
+         code"), and the one-time-code input all trip AgentAuth's MFA detection. -->
+    <h1>Verification code</h1>
+    <p>Enter the 6-digit code from your authenticator app (sent to •••• 1234).</p>
+    <form id="mfa" onsubmit="event.preventDefault(); location.href = 'dashboard.html';">
+      <label for="otp">One-time code</label>
+      <input id="otp" name="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6" />
+      <button id="verify" type="submit">Verify</button>
+    </form>
+  </body>
+</html>

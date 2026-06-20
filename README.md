@@ -15,6 +15,8 @@ everywhere — without ever holding your raw secrets.
 [![Fail](https://img.shields.io/badge/posture-fail--closed-critical)](#)
 [![License](https://img.shields.io/badge/license-MIT-black)](#)
 
+**▶ See it: [an agent logs into a web app, hits MFA, a human approves from their phone, the transcript downloads — no password or code ever logged.](docs/demo-irs-transcript.md)**
+
 </div>
 
 ---
