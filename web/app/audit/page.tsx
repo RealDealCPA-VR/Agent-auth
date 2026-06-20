@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { api, AuditEvent, AuditVerifyResult } from '@/lib/api';
 import RequireAuth from '../components/RequireAuth';
 import ErrorBanner from '../components/ErrorBanner';
@@ -28,13 +28,34 @@ function AuditView() {
   const [verify, setVerify] = useState<AuditVerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
 
-  // Offset-based paging: load(0) replaces; load(events.length) appends the next
+  // Server-row cursor: how many rows we've consumed from the server so far. This
+  // is the offset for the NEXT page, and must track rows CONSUMED — not the
+  // post-dedup display count (events.length). Dedup drops rows that shifted into
+  // an already-seen window; using events.length as the offset would then ask for
+  // an offset BEHIND the real cursor, re-fetching the same window forever.
+  const cursor = useRef(0);
+
+  // Offset-based paging: load(0) replaces; load(cursor.current) appends the next
   // page, so the full audit history is reachable, not just the newest 100.
   const load = useCallback(async (offset = 0) => {
     setError(null);
     try {
       const page = await api.listAudit(PAGE, offset);
-      setEvents((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+      const consumed = page.pagination?.returned ?? page.items.length;
+      cursor.current = offset === 0 ? consumed : offset + consumed;
+      setEvents((prev) => {
+        if (offset === 0) return page.items;
+        // New rows inserted between page loads shift the offset window, so a
+        // page can re-deliver rows already shown. Dedupe by id (events without
+        // an id can't be deduped and are kept) so React keys stay unique.
+        const seen = new Set(
+          prev.map((e) => e.id).filter((id): id is string => typeof id === 'string'),
+        );
+        const fresh = page.items.filter(
+          (e) => typeof e.id !== 'string' || !seen.has(e.id),
+        );
+        return [...prev, ...fresh];
+      });
       setTotal(page.pagination?.total ?? 0);
     } catch (err) {
       setError(err);
@@ -134,12 +155,12 @@ function AuditView() {
             </tbody>
           </table>
         )}
-        {!loading && events.length < total && (
+        {!loading && cursor.current < total && (
           <div className="flex-between" style={{ marginTop: '0.75rem' }}>
             <span className="muted">
               Showing {events.length} of {total}
             </span>
-            <button onClick={() => load(events.length)}>Load more</button>
+            <button onClick={() => load(cursor.current)}>Load more</button>
           </div>
         )}
       </div>

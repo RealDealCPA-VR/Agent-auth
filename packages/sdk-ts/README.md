@@ -90,6 +90,60 @@ How the secret is injected downstream is set at deposit time via the optional
 `{ mode: 'header', name, prefix? }` | `{ mode: 'query', name }`), defaulting to
 the server's per-type default.
 
+## Browser login
+
+For sites that can't be driven by a single HTTP call (cookie/header/localStorage
+sessions or a real login form), the agent can ask AgentAuth for a **browser-login
+plan** and apply it to a [Playwright](https://playwright.dev) or
+[Puppeteer](https://pptr.dev) page. The plan carries secret material (cookie
+values, header values, storage values, or form-fill values) at the same trust
+level as `useCredential` — it flows into the browser only and is never logged.
+
+```ts
+import { AgentAuthClient } from '@agentauth/sdk';
+import { chromium } from 'playwright'; // or: import puppeteer from 'puppeteer';
+
+const aa = new AgentAuthClient({ baseUrl, apiKey: process.env.AGENTAUTH_KEY! });
+
+const browser = await chromium.launch();
+const page = await browser.newPage();
+
+// Fetch the plan and apply it to the page in one call. Returns a NON-SECRET
+// summary (names/keys/counts only) — safe to log.
+const summary = await aa.browserLogin(page, 'github.com');
+console.log(summary);
+// e.g. { mode: 'cookie', target: 'github.com', url: 'https://github.com',
+//        cookieNames: ['user_session'] }
+// the page is now logged in — drive it as usual.
+```
+
+The SDK feature-detects the page (Playwright is primary; Puppeteer is a
+fallback) and applies the plan per its `mode`:
+
+| `mode`         | What it does                                                          |
+| -------------- | -------------------------------------------------------------------- |
+| `cookie`       | set cookies on the context/page, then `goto(plan.url)`               |
+| `header`       | set extra HTTP headers, then `goto(plan.url)`                        |
+| `localStorage` | `goto(plan.url)`, then seed `localStorage` items                     |
+| `form`         | run the ordered `goto` / `fill` / `click` actions                   |
+
+Advanced callers can split the two steps: fetch the raw plan with
+`getBrowserLoginPlan(idOrTarget)` (resolves `idOrTarget` exactly like
+`useCredential`; a policy that needs approval throws `ApprovalPendingError`),
+then apply it yourself with the standalone `applyBrowserLogin(page, plan)`. Both
+return the same non-secret `BrowserLoginSummary`:
+`{ mode, target, url, cookieNames?, headerNames?, storageKeys?, filledFields?, submitted? }`.
+
+### Agent methods
+
+| Method                              | Endpoint                                          |
+| ----------------------------------- | ------------------------------------------------- |
+| `listCredentials(opts?)`            | `GET /v1/vault/credentials`                       |
+| `useCredential(idOrTarget)`         | `POST /v1/vault/credentials/:id/use`              |
+| `proxy(idOrTarget, request?)`       | `POST /v1/vault/credentials/:id/proxy`            |
+| `getBrowserLoginPlan(idOrTarget)`   | `POST /v1/vault/credentials/:id/browser-login`    |
+| `browserLogin(page, idOrTarget)`    | `POST /v1/vault/credentials/:id/browser-login` + applies the plan to `page` |
+
 ## Human / admin usage
 
 ```ts
@@ -105,6 +159,11 @@ await human.depositCredential(passport.id, {
   label: 'GH token',
   type: 'api_key', // password | oauth_token | cookie | api_key
   secret: 'ghp_xxx',
+  // Optional usage policy (all omittable):
+  maxUses: 100,                          // cap total uses
+  allowedFrom: '2026-01-01T00:00:00Z',   // not usable before (ISO-8601)
+  allowedUntil: '2026-12-31T00:00:00Z',  // not usable after  (ISO-8601)
+  requireApproval: true,                 // each use needs human approval
 });
 
 const agent = await human.issueAgent({
@@ -145,8 +204,13 @@ const session = await HumanClient.loginRaw('https://vault.example.com', 'me@exam
 | `issueAgent(input)`                   | `POST /v1/agents`                       |
 | `listAgents(opts?)`                   | `GET /v1/agents`                        |
 | `revokeAgent(agentId)`                | `POST /v1/agents/:id/revoke`            |
+| `bindAgentMtls(agentId,opts)`         | `POST /v1/agents/:id/mtls`              |
+| `startOauth(passportId,provider,opts?)` | `POST /v1/passports/:id/oauth/:provider/start` |
 | `listAudit(opts?)`                    | `GET /v1/audit`                         |
 | `verifyAudit()`                       | `GET /v1/audit/verify`                  |
+| `listApprovals(opts?)`                | `GET /v1/approvals`                     |
+| `approveRequest(requestId)`           | `POST /v1/approvals/:id/approve`        |
+| `denyRequest(requestId)`              | `POST /v1/approvals/:id/deny`           |
 
 ## Error handling
 

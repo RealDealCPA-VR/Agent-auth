@@ -181,6 +181,130 @@ export interface ApprovalRequest {
   expiresAt: string;
 }
 
+// --- Browser-login wire types -----------------------------------------------
+
+/**
+ * A single cookie in a {@link BrowserLoginPlan} of mode `cookie`. Carries the
+ * cookie **value** (secret material) — apply it to a browser context and never
+ * log it.
+ */
+export interface PlanCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None' | string;
+}
+
+/**
+ * One step of a `form`-mode {@link BrowserLoginPlan}. Executed in order against
+ * the page: navigate, fill a field, or click an element. `fill` actions carry the
+ * field **value** (secret material).
+ */
+export type BrowserFormAction =
+  | { type: 'goto'; url: string }
+  | { type: 'fill'; selector: string; value: string }
+  | { type: 'click'; selector: string };
+
+/**
+ * A plan for logging a browser into a target, returned by
+ * {@link AgentAuthClient.getBrowserLoginPlan}. The shape is discriminated on
+ * `mode`. **Every variant carries secret material** (cookie values, header
+ * values, storage values, or form field values) at the same trust level as
+ * {@link UsedCredential.secret} — apply it immediately and never log it.
+ */
+export type BrowserLoginPlan =
+  | {
+      mode: 'cookie';
+      target: string;
+      /** Where to navigate after the cookies are set. */
+      url: string;
+      cookies: PlanCookie[];
+    }
+  | {
+      mode: 'header';
+      target: string;
+      url: string;
+      /** Extra HTTP headers to send (values are secret). */
+      headers: Record<string, string>;
+    }
+  | {
+      mode: 'localStorage';
+      target: string;
+      /** The origin whose localStorage the items belong to. */
+      origin: string;
+      url: string;
+      /** localStorage entries to seed (values are secret). */
+      items: Record<string, string>;
+    }
+  | {
+      mode: 'form';
+      target: string;
+      url: string;
+      /** Ordered steps to drive the login form (fill values are secret). */
+      actions: BrowserFormAction[];
+      /** If set, the login is considered submitted once the URL includes this. */
+      successUrlIncludes?: string;
+    };
+
+/**
+ * A non-secret summary of what {@link applyBrowserLogin} / {@link AgentAuthClient.browserLogin}
+ * applied to a page. **Carries no secret material** — only names/keys and counts —
+ * so it is safe to log.
+ */
+export interface BrowserLoginSummary {
+  mode: BrowserLoginPlan['mode'];
+  target: string;
+  url: string;
+  /** Names of the cookies that were set (cookie mode). */
+  cookieNames?: string[];
+  /** Names of the headers that were set (header mode). */
+  headerNames?: string[];
+  /** Keys written to localStorage (localStorage mode). */
+  storageKeys?: string[];
+  /** Number of form fields that were filled (form mode). */
+  filledFields?: number;
+  /** Whether the form login appears to have been submitted (form mode). */
+  submitted?: boolean;
+}
+
+/**
+ * A minimal **structural** interface for a browser page, satisfied by both a
+ * Playwright `Page` and a Puppeteer `Page`. Declared structurally (not imported)
+ * so the SDK keeps zero runtime dependencies — you pass your own page object.
+ *
+ * {@link applyBrowserLogin} feature-detects which framework you handed it and
+ * calls the matching methods; everything here is optional so either shape type-checks.
+ */
+export interface BrowserPage {
+  /** Navigate to a URL (both Playwright and Puppeteer). */
+  goto(url: string, options?: unknown): Promise<unknown>;
+  /** Evaluate a function in the page (both Playwright and Puppeteer). */
+  evaluate<R, A>(fn: (arg: A) => R, arg: A): Promise<R>;
+  /** Playwright: the browsing context (cookies / headers live here). */
+  context?: () => BrowserContextLike;
+  /** Puppeteer: set cookies directly on the page. */
+  setCookie?: (...cookies: PlanCookie[]) => Promise<unknown>;
+  /** Puppeteer (and Playwright fallback): set extra HTTP headers. */
+  setExtraHTTPHeaders?: (headers: Record<string, string>) => Promise<unknown>;
+  /** Fill an input (Playwright; also present on recent Puppeteer). */
+  fill?: (selector: string, value: string) => Promise<unknown>;
+  /** Type into an input (Puppeteer fallback for `fill`). */
+  type?: (selector: string, value: string) => Promise<unknown>;
+  /** Click an element (both Playwright and Puppeteer). */
+  click(selector: string): Promise<unknown>;
+  /** Current page URL (used to detect form-login success). */
+  url?: () => string;
+}
+
+/** The subset of a Playwright `BrowserContext` the SDK uses. */
+export interface BrowserContextLike {
+  addCookies?: (cookies: PlanCookie[]) => Promise<unknown>;
+  setExtraHTTPHeaders?: (headers: Record<string, string>) => Promise<unknown>;
+}
+
 // --- Error type -------------------------------------------------------------
 
 /** The server's error envelope shape. */
@@ -443,6 +567,137 @@ function defaultMessageFor(status: number): string {
   return `request failed with status ${status}`;
 }
 
+// --- Browser-login application ----------------------------------------------
+
+/**
+ * Apply a {@link BrowserLoginPlan} to a browser `page` and return a non-secret
+ * {@link BrowserLoginSummary}. Most callers should use
+ * {@link AgentAuthClient.browserLogin}, which fetches the plan first; this
+ * standalone form is for advanced callers who already hold a plan.
+ *
+ * Supports **Playwright** (primary) and **Puppeteer** (fallback) via feature
+ * detection on the page object — no framework is imported, so the SDK stays
+ * dependency-free. The returned summary carries only names/keys/counts and
+ * **never any secret value** (cookie value, header value, storage value, or form
+ * field value); nothing here is logged by the SDK.
+ *
+ * @param page A Playwright or Puppeteer `Page` (see {@link BrowserPage}).
+ * @param plan The plan to apply.
+ */
+export async function applyBrowserLogin(
+  page: BrowserPage,
+  plan: BrowserLoginPlan,
+): Promise<BrowserLoginSummary> {
+  switch (plan.mode) {
+    case 'cookie': {
+      const ctx = page.context?.();
+      if (ctx?.addCookies) {
+        // Playwright: cookies are set on the browsing context.
+        await ctx.addCookies(plan.cookies);
+      } else if (page.setCookie) {
+        // Puppeteer: cookies are set on the page (spread args).
+        await page.setCookie(...plan.cookies);
+      } else {
+        throw new TypeError(
+          'AgentAuth SDK: page supports neither context().addCookies (Playwright) nor setCookie (Puppeteer)',
+        );
+      }
+      await page.goto(plan.url);
+      return {
+        mode: plan.mode,
+        target: plan.target,
+        url: plan.url,
+        cookieNames: plan.cookies.map((c) => c.name),
+      };
+    }
+
+    case 'header': {
+      const ctx = page.context?.();
+      if (ctx?.setExtraHTTPHeaders) {
+        // Playwright: headers are set on the browsing context.
+        await ctx.setExtraHTTPHeaders(plan.headers);
+      } else if (page.setExtraHTTPHeaders) {
+        // Puppeteer (and Playwright page-level fallback).
+        await page.setExtraHTTPHeaders(plan.headers);
+      } else {
+        throw new TypeError(
+          'AgentAuth SDK: page supports neither context().setExtraHTTPHeaders nor setExtraHTTPHeaders',
+        );
+      }
+      await page.goto(plan.url);
+      return {
+        mode: plan.mode,
+        target: plan.target,
+        url: plan.url,
+        headerNames: Object.keys(plan.headers),
+      };
+    }
+
+    case 'localStorage': {
+      // Navigate first so the page's origin is loaded, then seed localStorage.
+      await page.goto(plan.url);
+      await page.evaluate((items: Record<string, string>) => {
+        for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v);
+      }, plan.items);
+      return {
+        mode: plan.mode,
+        target: plan.target,
+        url: plan.url,
+        storageKeys: Object.keys(plan.items),
+      };
+    }
+
+    case 'form': {
+      let filledFields = 0;
+      for (const action of plan.actions) {
+        switch (action.type) {
+          case 'goto':
+            await page.goto(action.url);
+            break;
+          case 'fill':
+            if (page.fill) await page.fill(action.selector, action.value);
+            else if (page.type) await page.type(action.selector, action.value);
+            else
+              throw new TypeError(
+                'AgentAuth SDK: page supports neither fill (Playwright) nor type (Puppeteer)',
+              );
+            filledFields += 1;
+            break;
+          case 'click':
+            await page.click(action.selector);
+            break;
+          default:
+            // Fail loud on an unknown action (a forward-incompatible plan) rather
+            // than silently producing a partial login with a clean-looking summary.
+            throw new TypeError(
+              `AgentAuth SDK: unknown browser form action type: ${String((action as { type?: unknown }).type)}`,
+            );
+        }
+      }
+      // Best-effort success detection: did we land on a URL that matches?
+      let submitted: boolean | undefined;
+      if (plan.successUrlIncludes !== undefined) {
+        const current = page.url?.();
+        submitted = typeof current === 'string' ? current.includes(plan.successUrlIncludes) : false;
+      }
+      return {
+        mode: plan.mode,
+        target: plan.target,
+        url: plan.url,
+        filledFields,
+        ...(submitted !== undefined ? { submitted } : {}),
+      };
+    }
+
+    default:
+      // Exhaustiveness guard: an unknown plan mode (forward-incompatible server)
+      // throws rather than returning undefined, mirroring the Python SDK.
+      throw new TypeError(
+        `AgentAuth SDK: unknown browser-login plan mode: ${String((plan as { mode?: unknown }).mode)}`,
+      );
+  }
+}
+
 // --- Agent client -----------------------------------------------------------
 
 /** Options for {@link AgentAuthClient}. */
@@ -560,6 +815,54 @@ export class AgentAuthClient extends Transport {
   }
 
   /**
+   * Fetch the {@link BrowserLoginPlan} for a credential — the recipe for logging
+   * a browser into the credential's target (cookies, headers, localStorage, or a
+   * form-fill sequence). The returned plan **carries secret material** at the same
+   * trust level as {@link useCredential}; apply it immediately and never log it.
+   *
+   * The credential is identified by **id** (a UUID) or by **target** (any other
+   * string), resolved exactly like {@link useCredential} / {@link proxy}. Requires
+   * the `vault:use` scope; target-scoping applies as for `/use`.
+   *
+   * @param idOrTarget A credential UUID, or a target host string to resolve.
+   * @throws {ApprovalPendingError} 202 when the credential's policy requires human approval.
+   * @throws {AgentAuthError} 403 (scope/target), 404 (no match), 410 (expired/window),
+   *   422 (no/invalid browser spec), 429 (use limit), 502 (oauth refresh failed),
+   *   plus the usual 401/503.
+   */
+  async getBrowserLoginPlan(idOrTarget: string): Promise<BrowserLoginPlan> {
+    if (!idOrTarget) {
+      throw new TypeError('AgentAuth SDK: getBrowserLoginPlan() requires an id or target');
+    }
+    const id = isUuid(idOrTarget) ? idOrTarget : await this.resolveTarget(idOrTarget);
+    return this.request<BrowserLoginPlan>({
+      method: 'POST',
+      path: `/v1/vault/credentials/${encodeURIComponent(id)}/browser-login`,
+      authorization: this.authHeader,
+    });
+  }
+
+  /**
+   * Log a browser `page` into a credential's target: fetch the
+   * {@link BrowserLoginPlan} via {@link getBrowserLoginPlan}, apply it to the page,
+   * and return a **non-secret** {@link BrowserLoginSummary}. The secret material in
+   * the plan flows only into the browser — it is **never** placed in the return
+   * value or logged.
+   *
+   * Works with both **Playwright** and **Puppeteer** pages (feature-detected; no
+   * framework is imported). The `idOrTarget` is resolved exactly like
+   * {@link useCredential}.
+   *
+   * @param page A Playwright or Puppeteer `Page` (see {@link BrowserPage}).
+   * @param idOrTarget A credential UUID, or a target host string to resolve.
+   * @throws {ApprovalPendingError} / {@link AgentAuthError} as {@link getBrowserLoginPlan}.
+   */
+  async browserLogin(page: BrowserPage, idOrTarget: string): Promise<BrowserLoginSummary> {
+    const plan = await this.getBrowserLoginPlan(idOrTarget);
+    return applyBrowserLogin(page, plan);
+  }
+
+  /**
    * Resolve a target string to a single credential id by scanning the listing.
    * Pages until a match is found or the listing is exhausted. If more than one
    * credential shares the target, the first match (by listing order) wins.
@@ -625,6 +928,14 @@ export interface DepositCredentialInput {
    * proxy mode. Omit to use the server's per-type default.
    */
   injection?: CredentialInjection;
+  /** Optional usage cap: the credential may be used at most this many times. */
+  maxUses?: number;
+  /** Optional ISO-8601 timestamp: the credential is not usable before this. */
+  allowedFrom?: string;
+  /** Optional ISO-8601 timestamp: the credential is not usable after this. */
+  allowedUntil?: string;
+  /** When true, each use must be approved by a human before the secret is released. */
+  requireApproval?: boolean;
 }
 
 /** Input for {@link HumanClient.issueAgent}. */
@@ -830,6 +1141,62 @@ export class HumanClient extends Transport {
     return this.request<ApprovalRequest>({
       method: 'POST',
       path: `/v1/approvals/${encodeURIComponent(requestId)}/deny`,
+      authorization: this.authHeader,
+    });
+  }
+
+  /**
+   * Bind an mTLS client certificate to one of your agents, so it can authenticate
+   * with that client cert (by fingerprint) as an alternative to its bearer API key.
+   * Provide either a PEM cert (the fingerprint is derived server-side) or a
+   * pre-computed SHA-256 fingerprint. The binding is an idempotent overwrite.
+   *
+   * @param agentId The agent's UUID.
+   * @param opts `{ certPem }` or `{ fingerprint }` (at least one is required).
+   * @returns The agent id and the bound `certFingerprint` (SHA-256 hex).
+   * @throws {AgentAuthError} 400 (no/invalid cert or fingerprint), 404 (agent not
+   *   found / not yours), 409 (fingerprint already bound to another agent).
+   */
+  bindAgentMtls(
+    agentId: string,
+    opts: { certPem?: string; fingerprint?: string },
+  ): Promise<{ id: string; certFingerprint: string }> {
+    return this.request<{ id: string; certFingerprint: string }>({
+      method: 'POST',
+      path: `/v1/agents/${encodeURIComponent(agentId)}/mtls`,
+      body: {
+        ...(opts.certPem !== undefined ? { certPem: opts.certPem } : {}),
+        ...(opts.fingerprint !== undefined ? { fingerprint: opts.fingerprint } : {}),
+      },
+      authorization: this.authHeader,
+    });
+  }
+
+  /**
+   * Begin an OAuth authorization-code flow for a passport. Returns the URL the
+   * human's browser should visit to authorize, plus the CSRF `state`. After the
+   * user authorizes, the provider redirects to the server callback, which seals
+   * the tokens as an `oauth_token` credential the agent can later reuse.
+   *
+   * @param passportId The passport's UUID.
+   * @param provider The provider name (e.g. `github`, `google`).
+   * @param opts Optional `target` override (defaults to the provider name) and `label`.
+   * @returns `{ authorizeUrl, state }`.
+   * @throws {AgentAuthError} 404 (passport/provider not found), 400 (invalid body),
+   *   500 (oauth misconfigured).
+   */
+  startOauth(
+    passportId: string,
+    provider: string,
+    opts: { target?: string; label?: string } = {},
+  ): Promise<{ authorizeUrl: string; state: string }> {
+    return this.request<{ authorizeUrl: string; state: string }>({
+      method: 'POST',
+      path: `/v1/passports/${encodeURIComponent(passportId)}/oauth/${encodeURIComponent(provider)}/start`,
+      body: {
+        ...(opts.target !== undefined ? { target: opts.target } : {}),
+        ...(opts.label !== undefined ? { label: opts.label } : {}),
+      },
       authorization: this.authHeader,
     });
   }

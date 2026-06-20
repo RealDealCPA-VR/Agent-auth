@@ -73,6 +73,14 @@ export async function buildServer(): Promise<FastifyInstance> {
           'res.body.secret',
           'res.body.apiKey',
           'res.body.token',
+          // Browser-login plan carries secret material in nested fields (cookie
+          // values, header values, localStorage items, form fill values). Cover
+          // them so the plan response is redacted to the same standard as /use,
+          // should response-body logging ever be enabled.
+          'res.body.cookies[*].value',
+          'res.body.headers',
+          'res.body.items',
+          'res.body.actions[*].value',
         ],
         censor: '[redacted]',
       },

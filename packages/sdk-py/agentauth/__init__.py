@@ -3,9 +3,9 @@
 The credential vault and identity broker for AI agents. Two clients:
 
 * :class:`HumanClient`  — management plane (session JWT): register, passports,
-  deposit, agents, audit.
+  deposit (with usage policy), agents, mTLS bind, OAuth start, approvals, audit.
 * :class:`AgentAuthClient` — data plane (agent API key): discover and use
-  credentials, including resolution by target host.
+  credentials (including resolution by target host), proxy, and browser-login.
 
 All API errors are raised as :class:`AgentAuthError`.
 """

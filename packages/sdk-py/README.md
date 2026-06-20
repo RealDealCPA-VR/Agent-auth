@@ -171,11 +171,71 @@ with AgentAuthClient(base_url, api_key) as client:
 ## Method reference
 
 **`HumanClient`** — `register`, `login`, `logout`, `create_passport`,
-`list_passports`, `deposit_credential`, `list_credentials`, `issue_agent`,
-`list_agents`, `revoke_agent`, `list_audit`, `verify_audit`.
+`list_passports`, `deposit_credential(... , *, max_uses, allowed_from,
+allowed_until, require_approval)`, `list_credentials`, `issue_agent`,
+`list_agents`, `revoke_agent`, `bind_agent_mtls(agent_id, *, cert_pem,
+fingerprint)`, `start_oauth(passport_id, provider, *, target, label)`,
+`list_audit`, `verify_audit`, `list_approvals`, `approve_request(request_id)`,
+`deny_request(request_id)`.
 
 **`AgentAuthClient`** — `list_credentials`, `use_credential(id_or_target)`,
-`proxy(id_or_target, *, method, path, query, headers, body)`.
+`proxy(id_or_target, *, method, path, query, headers, body)`,
+`get_browser_login_plan(id_or_target)`,
+`browser_login(page, id_or_target)`.
+
+### Browser-login (drive a real browser into a logged-in session)
+
+For sites that can't be used via a token alone, `browser_login()` fetches a
+server-issued **plan** (cookies / headers / localStorage / a form-fill script —
+all carrying secret material, same trust level as `use_credential`) and applies
+it to a Playwright **sync** `page`. It returns a **non-secret summary** (modes,
+names, counts) — never any cookie/header/storage/form value.
+
+```python
+from playwright.sync_api import sync_playwright
+from agentauth import AgentAuthClient
+
+client = AgentAuthClient("https://api.agentauth.dev", "aa_uuid.secret")
+
+with sync_playwright() as p:
+    page = p.chromium.launch().new_page()
+    summary = client.browser_login(page, "github.com")
+    # summary -> {"mode": "cookie", "target": "github.com", "url": ..., "cookie_names": [...]}
+    # the page is now logged in; drive it as usual.
+
+# Or fetch the plan yourself (it carries secrets) and apply it your own way:
+plan = client.get_browser_login_plan("github.com")
+```
+
+The agent key needs the **`vault:use`** scope and the target must be scoped. A
+`202` (approval required) raises `ApprovalPendingError`. Playwright is **not** a
+dependency of the SDK — the `page` is duck-typed.
+
+### Management extras (mTLS + OAuth + approvals)
+
+```python
+# Bind an mTLS client cert to an agent (PEM or precomputed fingerprint):
+client.bind_agent_mtls(agent["id"], cert_pem=open("client.crt").read())
+# -> {"id": ..., "certFingerprint": "..."}
+
+# Start an OAuth authorization-code flow; send the human's browser to authorizeUrl:
+flow = client.start_oauth(passport["id"], "github", target="github.com")
+print(flow["authorizeUrl"], flow["state"])
+
+# Approvals queue (when a credential requires human approval):
+for req in client.list_approvals()["items"]:
+    client.approve_request(req["id"])   # or client.deny_request(req["id"])
+
+# Deposit-time usage policy:
+client.deposit_credential(
+    passport["id"], target="api.example.com", label="X", type="api_key",
+    secret="sk_...",
+    max_uses=100,                          # cap total uses
+    allowed_from="2030-01-01T00:00:00Z",   # ISO-8601 window
+    allowed_until="2031-01-01T00:00:00Z",
+    require_approval=True,                  # each use needs human approval
+)
+```
 
 ## Development
 

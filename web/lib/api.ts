@@ -349,6 +349,11 @@ export const api = {
       secret: string;
       metadata?: Record<string, unknown>;
       expiresAt?: string;
+      // Usage policy (the server accepts these on deposit).
+      maxUses?: number;
+      allowedFrom?: string; // ISO timestamp
+      allowedUntil?: string; // ISO timestamp
+      requireApproval?: boolean;
     },
   ): Promise<Credential> {
     return request<Credential>(
@@ -378,6 +383,18 @@ export const api = {
     return request<{ id: string; revoked: boolean }>(
       `/v1/agents/${encodeURIComponent(id)}/revoke`,
       { method: 'POST' },
+    );
+  },
+
+  // Bind an mTLS client cert to an agent. Provide either a PEM cert (the
+  // fingerprint is derived server-side) or a pre-computed SHA-256 fingerprint.
+  bindAgentMtls(
+    agentId: string,
+    body: { certPem?: string; fingerprint?: string },
+  ): Promise<{ id: string; certFingerprint: string }> {
+    return request<{ id: string; certFingerprint: string }>(
+      `/v1/agents/${encodeURIComponent(agentId)}/mtls`,
+      { method: 'POST', body },
     );
   },
 

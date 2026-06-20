@@ -213,6 +213,17 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
         ip: req.ip,
       });
 
+      // The caller here is the user's BROWSER (the provider redirect). When it
+      // accepts HTML, render a small self-contained success page that signals the
+      // opener (the admin UI) to refresh and invites the user to close the tab —
+      // instead of dumping raw API JSON. Programmatic callers (and tests) get the
+      // JSON envelope as before via content negotiation.
+      if (acceptsHtml(req.headers.accept)) {
+        return reply
+          .type('text/html; charset=utf-8')
+          .send(oauthSuccessHtml({ provider: flow.provider, target: row.target, label: row.label }));
+      }
+
       return reply.send({
         status: 'ok',
         credentialId: row.id,
@@ -222,4 +233,56 @@ export async function oauthRoutes(app: FastifyInstance): Promise<void> {
       });
     },
   );
+}
+
+/** True when the request's Accept header prefers HTML (a real browser redirect). */
+function acceptsHtml(accept: string | undefined): boolean {
+  return typeof accept === 'string' && accept.toLowerCase().includes('text/html');
+}
+
+/** Minimal HTML entity escape for values interpolated into the success page. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * A tiny, dependency-free success page shown in the OAuth popup. It notifies the
+ * opener window (the admin UI) so it can reload its credential list, then tells
+ * the user they may close the tab. Carries no secret — only the provider/target/
+ * label already returned in the JSON form.
+ */
+function oauthSuccessHtml(args: { provider: string; target: string; label: string }): string {
+  const provider = escapeHtml(args.provider);
+  const target = escapeHtml(args.target);
+  const label = escapeHtml(args.label);
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connected — AgentAuth</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0c10; color:#e6e6e6;
+         display:flex; min-height:100vh; align-items:center; justify-content:center; margin:0; }
+  .card { max-width:420px; padding:2rem; background:#14161c; border:1px solid #2a2e39; border-radius:12px; }
+  h1 { font-size:1.25rem; margin:0 0 .5rem; }
+  .muted { color:#9aa0ac; font-size:.9rem; }
+  code { color:#7ee0c0; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>✓ Connected ${provider}</h1>
+    <p class="muted">Sealed <strong>${label}</strong> for <code>${target}</code>. You can close this tab.</p>
+  </div>
+  <script>
+    try { if (window.opener) window.opener.postMessage({ type: 'agentauth:oauth-captured' }, '*'); } catch (e) {}
+  </script>
+</body>
+</html>`;
 }

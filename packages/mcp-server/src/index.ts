@@ -11,6 +11,10 @@
  *   • proxy_request    — call the target with the credential injected server-side
  *                        (the raw secret is NEVER exposed to the agent)
  *
+ * Browser-login is intentionally an SDK-only feature (see @agentauth/sdk): its
+ * secret-confinement requires a real browser page to apply the plan to, which a
+ * stdio MCP bridge does not have.
+ *
  * Configuration comes from the environment:
  *   • AGENTAUTH_BASE_URL — the AgentAuth API base (default http://localhost:8080)
  *   • AGENTAUTH_API_KEY  — the agent API key `aa_<uuid>.<secret>` (REQUIRED)
@@ -101,7 +105,7 @@ function hintForStatus(status: number): string {
   }
 }
 
-/** Build and wire up the MCP server with the two vault tools. */
+/** Build and wire up the MCP server with the vault tools. */
 export function buildServer(client: AgentAuthClient): McpServer {
   const server = new McpServer({
     name: 'agentauth',
@@ -211,6 +215,15 @@ export function buildServer(client: AgentAuthClient): McpServer {
       }
     },
   );
+
+  // NOTE: browser-login is intentionally NOT exposed as an MCP tool. Its whole
+  // value over use_credential is that the secret is confined to an SDK helper
+  // applying the plan to a real browser PAGE — the agent's reasoning never sees it.
+  // A stdio MCP bridge has no page to apply the plan to, so a browser_login tool
+  // could only serialize live cookie/header/form secret values into the model's
+  // tool-result stream — strictly more exposure than use_credential, with none of
+  // the confinement. MCP agents authenticate via use_credential or proxy_request;
+  // browser-login lives in the TS/Python SDKs (see @agentauth/sdk browserLogin).
 
   return server;
 }

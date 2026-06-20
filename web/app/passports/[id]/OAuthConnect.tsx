@@ -1,22 +1,73 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useEffect, useRef, useState, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import ErrorBanner from '../../components/ErrorBanner';
+
+/** Message the server's OAuth callback success page posts back to the opener. */
+const OAUTH_CAPTURED = 'agentauth:oauth-captured';
 
 /**
  * "Connect an OAuth provider" form. Starts the provider authorization flow for
  * this passport and opens the returned authorizeUrl in a new tab so the user
- * can complete consent. Once authorized, the captured credential shows up in
- * the passport's credential list (the server deposits it on callback).
+ * can complete consent. Once authorized, the server deposits the captured
+ * credential and its callback success page posts a window message back here, at
+ * which point we invoke onCaptured so the parent reloads its credential list.
+ * As a fallback (e.g. cross-origin opener message blocked) we briefly poll the
+ * parent's reload after the consent tab opens.
  */
-export default function OAuthConnect({ passportId }: { passportId: string }) {
+export default function OAuthConnect({
+  passportId,
+  onCaptured,
+}: {
+  passportId: string;
+  onCaptured?: () => void;
+}) {
   const [provider, setProvider] = useState('');
   const [target, setTarget] = useState('');
   const [label, setLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<unknown>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // Keep the latest onCaptured without re-subscribing the listener each render.
+  const onCapturedRef = useRef(onCaptured);
+  onCapturedRef.current = onCaptured;
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Listen for the callback success page's postMessage. Trust only our message
+  // type; the credential itself is never carried in the message (non-secret
+  // signal only) so we simply trigger a reload of the credential list.
+  useEffect(() => {
+    function onMessage(ev: MessageEvent) {
+      const data = ev.data as { type?: string } | null;
+      if (data && data.type === OAUTH_CAPTURED) {
+        setNotice('Captured the credential — refreshed the list below.');
+        onCapturedRef.current?.();
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // Fallback poll: refresh the credential list a few times after opening the
+  // consent tab, in case the postMessage never arrives (blocked opener, the
+  // redirect points elsewhere, etc.).
+  function startFallbackPoll() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    let ticks = 0;
+    pollRef.current = setInterval(() => {
+      ticks += 1;
+      onCapturedRef.current?.();
+      if (ticks >= 6 && pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }, 5000);
+  }
 
   async function onConnect(e: FormEvent) {
     e.preventDefault();
@@ -35,12 +86,17 @@ export default function OAuthConnect({ passportId }: { passportId: string }) {
         target: target.trim() || undefined,
         label: label.trim() || undefined,
       });
-      // Open the consent screen in a new tab; the user finishes there.
-      window.open(result.authorizeUrl, '_blank', 'noopener,noreferrer');
+      // Open the consent screen in a new tab; the user finishes there. We must
+      // NOT pass noopener/noreferrer here: those null window.opener in the popup,
+      // which would prevent the server callback success page from posting the
+      // capture message back to this window (the primary auto-refresh signal).
+      // The fallback poll below covers the case where the message is still missed.
+      window.open(result.authorizeUrl, '_blank');
       setNotice(
         `Opened ${p} consent in a new tab. Once you authorize, the captured ` +
-          `credential will appear in the list below — refresh after completing it.`,
+          `credential will appear in the list below automatically.`,
       );
+      startFallbackPoll();
       setProvider('');
       setTarget('');
       setLabel('');

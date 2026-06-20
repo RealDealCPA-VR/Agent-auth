@@ -221,6 +221,7 @@ export const auditAction = pgEnum('audit_action', [
   'credential.deposit',
   'credential.use',
   'credential.proxy',
+  'credential.browser',
   'agent.issue',
   'agent.revoke',
   'agent.mtls_bind',

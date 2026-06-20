@@ -4,7 +4,11 @@ import {
   AgentAuthError,
   ApprovalPendingError,
   HumanClient,
+  applyBrowserLogin,
+  type BrowserLoginPlan,
+  type BrowserPage,
   type Page,
+  type PlanCookie,
   type UsedCredential,
   type VaultCredential,
 } from './index.js';
@@ -639,5 +643,397 @@ describe('HumanClient approval methods', () => {
     expect(calls[1]?.method).toBe('POST');
     expect(calls[1]?.url).toBe(`${BASE}/v1/approvals/r1/approve`);
     expect(calls[2]?.url).toBe(`${BASE}/v1/approvals/r1/deny`);
+  });
+});
+
+// --- HumanClient: deposit policy fields, mTLS bind, OAuth start --------------
+
+describe('HumanClient.depositCredential policy fields', () => {
+  it('forwards maxUses/allowedFrom/allowedUntil/requireApproval only when set', async () => {
+    const { calls } = stubFetch([
+      {
+        status: 201,
+        body: {
+          id: 'cred1',
+          target: 'github.com',
+          label: 'GH',
+          type: 'api_key',
+          metadata: {},
+          expiresAt: null,
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      },
+    ]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    await hc.depositCredential('p1', {
+      target: 'github.com',
+      label: 'GH',
+      type: 'api_key',
+      secret: 'ghp_x',
+      maxUses: 5,
+      allowedFrom: '2026-01-01T00:00:00Z',
+      allowedUntil: '2026-12-31T00:00:00Z',
+      requireApproval: true,
+    });
+    expect(calls[0]?.url).toBe(`${BASE}/v1/passports/p1/credentials`);
+    expect(calls[0]?.body).toMatchObject({
+      target: 'github.com',
+      secret: 'ghp_x',
+      maxUses: 5,
+      allowedFrom: '2026-01-01T00:00:00Z',
+      allowedUntil: '2026-12-31T00:00:00Z',
+      requireApproval: true,
+    });
+  });
+
+  it('omits policy fields entirely when not provided', async () => {
+    const { calls } = stubFetch([
+      {
+        status: 201,
+        body: {
+          id: 'cred1',
+          target: 'github.com',
+          label: 'GH',
+          type: 'api_key',
+          metadata: {},
+          expiresAt: null,
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      },
+    ]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    await hc.depositCredential('p1', {
+      target: 'github.com',
+      label: 'GH',
+      type: 'api_key',
+      secret: 'ghp_x',
+    });
+    const body = calls[0]?.body as Record<string, unknown>;
+    expect(body).not.toHaveProperty('maxUses');
+    expect(body).not.toHaveProperty('allowedFrom');
+    expect(body).not.toHaveProperty('allowedUntil');
+    expect(body).not.toHaveProperty('requireApproval');
+  });
+});
+
+describe('HumanClient.bindAgentMtls', () => {
+  it('POSTs the mtls path with a fingerprint and returns the binding', async () => {
+    const fp = 'a'.repeat(64);
+    const { calls } = stubFetch([{ status: 200, body: { id: 'a1', certFingerprint: fp } }]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    const res = await hc.bindAgentMtls('a1', { fingerprint: fp });
+    expect(res).toEqual({ id: 'a1', certFingerprint: fp });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/agents/a1/mtls`);
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.body).toEqual({ fingerprint: fp });
+  });
+
+  it('forwards certPem and omits unset fields', async () => {
+    const { calls } = stubFetch([{ status: 200, body: { id: 'a1', certFingerprint: 'b'.repeat(64) } }]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    await hc.bindAgentMtls('a1', { certPem: '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----' });
+    expect(calls[0]?.body).toEqual({
+      certPem: '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----',
+    });
+  });
+});
+
+describe('HumanClient.startOauth', () => {
+  it('POSTs the start path and returns authorizeUrl + state', async () => {
+    const { calls } = stubFetch([
+      { status: 200, body: { authorizeUrl: 'https://github.com/login/oauth/authorize?x=1', state: 'st-1' } },
+    ]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    const res = await hc.startOauth('p1', 'github', { target: 'api.github.com', label: 'gh oauth' });
+    expect(res).toEqual({
+      authorizeUrl: 'https://github.com/login/oauth/authorize?x=1',
+      state: 'st-1',
+    });
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/passports/p1/oauth/github/start`);
+    expect(calls[0]?.body).toEqual({ target: 'api.github.com', label: 'gh oauth' });
+  });
+
+  it('sends an empty body when no opts are passed', async () => {
+    const { calls } = stubFetch([{ status: 200, body: { authorizeUrl: 'https://x/y', state: 's' } }]);
+    const hc = new HumanClient({ baseUrl: BASE, token: TOKEN });
+    await hc.startOauth('p1', 'google');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/passports/p1/oauth/google/start`);
+    expect(calls[0]?.body).toEqual({});
+  });
+});
+
+// --- AgentAuthClient: browser-login -----------------------------------------
+
+const PLAN_UUID = '88888888-8888-4888-8888-888888888888';
+
+describe('AgentAuthClient.getBrowserLoginPlan', () => {
+  it('POSTs straight to the browser-login path for a UUID', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'header',
+      target: 'github.com',
+      url: 'https://github.com',
+      headers: { authorization: 'Bearer ghp_secret' },
+    };
+    const { calls } = stubFetch([{ body: plan }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const result = await aa.getBrowserLoginPlan(PLAN_UUID);
+    expect(result.mode).toBe('header');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${PLAN_UUID}/browser-login`);
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${API_KEY}`);
+  });
+
+  it('resolves a non-UUID target via listing, then POSTs the matched id', async () => {
+    const list: Page<VaultCredential> = {
+      items: [
+        { id: 'cB', target: 'github.com', label: 'GH', type: 'cookie', metadata: {}, expiresAt: null },
+      ],
+      pagination: { limit: 200, offset: 0, total: 1, returned: 1 },
+    };
+    const plan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'github.com',
+      url: 'https://github.com',
+      cookies: [{ name: 'session', value: 'sekret', path: '/' }],
+    };
+    const { calls } = stubFetch([{ body: list }, { body: plan }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const result = await aa.getBrowserLoginPlan('github.com');
+    expect(result.mode).toBe('cookie');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url).toContain('/v1/vault/credentials?limit=200');
+    expect(calls[1]?.url).toBe(`${BASE}/v1/vault/credentials/cB/browser-login`);
+  });
+
+  it('throws ApprovalPendingError on a 202', async () => {
+    stubFetch([{ status: 202, body: { status: 'pending', requestId: 'req-bl' } }]);
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const err = await aa.getBrowserLoginPlan(PLAN_UUID).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApprovalPendingError);
+    expect((err as ApprovalPendingError).requestId).toBe('req-bl');
+  });
+});
+
+// A FakePage that records every interaction, modelling Playwright's shape
+// (context().addCookies / setExtraHTTPHeaders, fill) with an opt-in Puppeteer mode.
+interface PageEvent {
+  kind: string;
+  arg?: unknown;
+}
+
+function makeFakePage(opts: { puppeteer?: boolean; currentUrl?: string } = {}): {
+  page: BrowserPage;
+  events: PageEvent[];
+  store: Record<string, string>;
+} {
+  const events: PageEvent[] = [];
+  const store: Record<string, string> = {};
+  let current = opts.currentUrl ?? '';
+
+  const page: BrowserPage = {
+    goto: (url: string) => {
+      current = url;
+      events.push({ kind: 'goto', arg: url });
+      return Promise.resolve(null);
+    },
+    evaluate: <R, A>(fn: (arg: A) => R, arg: A): Promise<R> => {
+      // Simulate the localStorage seeding by running the fn against a shim.
+      events.push({ kind: 'evaluate', arg });
+      const g = globalThis as unknown as { localStorage?: unknown };
+      const had = g.localStorage;
+      g.localStorage = { setItem: (k: string, v: string) => void (store[k] = v) };
+      try {
+        const r = fn(arg);
+        return Promise.resolve(r);
+      } finally {
+        g.localStorage = had;
+      }
+    },
+    click: (selector: string) => {
+      events.push({ kind: 'click', arg: selector });
+      return Promise.resolve(null);
+    },
+    url: () => current,
+  };
+
+  if (opts.puppeteer) {
+    page.setCookie = (...cookies: PlanCookie[]) => {
+      events.push({ kind: 'setCookie', arg: cookies });
+      return Promise.resolve(null);
+    };
+    page.setExtraHTTPHeaders = (headers: Record<string, string>) => {
+      events.push({ kind: 'setExtraHTTPHeaders', arg: headers });
+      return Promise.resolve(null);
+    };
+    page.type = (selector: string, value: string) => {
+      events.push({ kind: 'type', arg: { selector, value } });
+      return Promise.resolve(null);
+    };
+  } else {
+    page.context = () =>
+      ({
+        addCookies: (cookies: PlanCookie[]) => {
+          events.push({ kind: 'addCookies', arg: cookies });
+          return Promise.resolve(null);
+        },
+        setExtraHTTPHeaders: (headers: Record<string, string>) => {
+          events.push({ kind: 'ctxSetHeaders', arg: headers });
+          return Promise.resolve(null);
+        },
+      }) as ReturnType<NonNullable<BrowserPage['context']>>;
+    page.fill = (selector: string, value: string) => {
+      events.push({ kind: 'fill', arg: { selector, value } });
+      return Promise.resolve(null);
+    };
+  }
+  return { page, events, store };
+}
+
+/** Recursively assert no secret string appears anywhere in a value. */
+function assertNoSecret(value: unknown, secrets: string[]): void {
+  const json = JSON.stringify(value);
+  for (const s of secrets) {
+    expect(json).not.toContain(s);
+  }
+}
+
+describe('applyBrowserLogin / browserLogin', () => {
+  it('cookie mode (Playwright): adds cookies then navigates; summary has no secret', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'github.com',
+      url: 'https://github.com/dashboard',
+      cookies: [
+        { name: 'session', value: 'SECRET_COOKIE', domain: 'github.com', path: '/', secure: true },
+      ],
+    };
+    const { page, events } = makeFakePage();
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events.map((e) => e.kind)).toEqual(['addCookies', 'goto']);
+    expect((events[1] as PageEvent).arg).toBe('https://github.com/dashboard');
+    expect(summary).toEqual({
+      mode: 'cookie',
+      target: 'github.com',
+      url: 'https://github.com/dashboard',
+      cookieNames: ['session'],
+    });
+    assertNoSecret(summary, ['SECRET_COOKIE']);
+  });
+
+  it('cookie mode (Puppeteer): uses page.setCookie spread', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'github.com',
+      url: 'https://github.com',
+      cookies: [{ name: 'a', value: 'SECRET_A', path: '/' }, { name: 'b', value: 'SECRET_B', path: '/' }],
+    };
+    const { page, events } = makeFakePage({ puppeteer: true });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events[0]?.kind).toBe('setCookie');
+    expect((events[0]?.arg as PlanCookie[]).map((c) => c.name)).toEqual(['a', 'b']);
+    expect(summary.cookieNames).toEqual(['a', 'b']);
+    assertNoSecret(summary, ['SECRET_A', 'SECRET_B']);
+  });
+
+  it('header mode (Playwright): sets headers on the context then navigates', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'header',
+      target: 'api.example.com',
+      url: 'https://api.example.com',
+      headers: { authorization: 'Bearer SECRET_TOKEN', 'x-api-key': 'SECRET_KEY' },
+    };
+    const { page, events } = makeFakePage();
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events.map((e) => e.kind)).toEqual(['ctxSetHeaders', 'goto']);
+    expect(summary).toEqual({
+      mode: 'header',
+      target: 'api.example.com',
+      url: 'https://api.example.com',
+      headerNames: ['authorization', 'x-api-key'],
+    });
+    assertNoSecret(summary, ['SECRET_TOKEN', 'SECRET_KEY']);
+  });
+
+  it('localStorage mode: navigates then seeds storage; summary lists keys only', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'localStorage',
+      target: 'app.example.com',
+      origin: 'https://app.example.com',
+      url: 'https://app.example.com',
+      items: { token: 'SECRET_LS', refresh: 'SECRET_RS' },
+    };
+    const { page, events, store } = makeFakePage();
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events.map((e) => e.kind)).toEqual(['goto', 'evaluate']);
+    expect(store.token).toBe('SECRET_LS'); // applied into the page
+    expect(summary).toEqual({
+      mode: 'localStorage',
+      target: 'app.example.com',
+      url: 'https://app.example.com',
+      storageKeys: ['token', 'refresh'],
+    });
+    assertNoSecret(summary, ['SECRET_LS', 'SECRET_RS']);
+  });
+
+  it('form mode (Playwright): runs goto/fill/click in order and detects success', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [
+        { type: 'goto', url: 'https://site.example.com/login' },
+        { type: 'fill', selector: '#user', value: 'alice' },
+        { type: 'fill', selector: '#pass', value: 'SECRET_PW' },
+        { type: 'click', selector: '#submit' },
+        { type: 'goto', url: 'https://site.example.com/home' },
+      ],
+      successUrlIncludes: '/home',
+    };
+    const { page, events } = makeFakePage();
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events.map((e) => e.kind)).toEqual(['goto', 'fill', 'fill', 'click', 'goto']);
+    expect(summary).toEqual({
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      filledFields: 2,
+      submitted: true,
+    });
+    assertNoSecret(summary, ['SECRET_PW', 'alice']);
+  });
+
+  it('form mode (Puppeteer): uses page.type when fill is absent', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'site.example.com',
+      url: 'https://site.example.com/login',
+      actions: [{ type: 'fill', selector: '#pass', value: 'SECRET_PW' }],
+    };
+    const { page, events } = makeFakePage({ puppeteer: true });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(events[0]?.kind).toBe('type');
+    expect(summary.filledFields).toBe(1);
+    expect(summary).not.toHaveProperty('submitted');
+    assertNoSecret(summary, ['SECRET_PW']);
+  });
+
+  it('browserLogin fetches the plan then applies it', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'cookie',
+      target: 'github.com',
+      url: 'https://github.com',
+      cookies: [{ name: 'session', value: 'SECRET_COOKIE', path: '/' }],
+    };
+    const { calls } = stubFetch([{ body: plan }]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const summary = await aa.browserLogin(page, PLAN_UUID);
+    expect(calls[0]?.url).toBe(`${BASE}/v1/vault/credentials/${PLAN_UUID}/browser-login`);
+    expect(events.map((e) => e.kind)).toEqual(['addCookies', 'goto']);
+    expect(summary.cookieNames).toEqual(['session']);
+    assertNoSecret(summary, ['SECRET_COOKIE']);
   });
 });

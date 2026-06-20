@@ -317,7 +317,10 @@ describe('proxy mode', () => {
       maxUses: 1,
     });
     const res = await proxy(apiKey, cred.id, { method: 'GET', path: '/x' });
-    expect([502, 504]).toContain(res.statusCode);
+    // A connection refused (bound-then-closed port) is a pre-response failure that
+    // maps to exactly 502 upstream_unreachable (NOT 504 — that's the timeout case).
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error.code).toBe('upstream_unreachable');
     // The use was charged then released — the slot is intact.
     const rows = await dbSql.unsafe<{ use_count: number }[]>(
       `SELECT use_count FROM credentials WHERE id = '${cred.id}'`,
@@ -404,6 +407,31 @@ describe('proxy mode', () => {
       },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('a decrypt failure returns 500 internal WITHOUT burning a maxUses slot', async () => {
+    const { token, pp, apiKey } = await setup();
+    // A fresh maxUses:1 credential at the mock target.
+    const cred = await h.deposit(app, token, pp, {
+      target: `http://localhost:${port}`,
+      label: 'corrupt',
+      type: 'api_key',
+      secret: SECRET,
+      maxUses: 1,
+    });
+    // Corrupt the sealed auth tag (valid 16-byte length, wrong bytes) so unseal
+    // fails — the reservation is only billed after a successful unseal, so the
+    // slot must survive (mirrors policies.test.ts's no-burn decrypt assertion).
+    await dbSql.unsafe(
+      `UPDATE credentials SET sealed = jsonb_set(sealed, '{tag}', '"AAAAAAAAAAAAAAAAAAAAAA=="') WHERE id = '${cred.id}'`,
+    );
+    const res = await proxy(apiKey, cred.id, { method: 'GET', path: '/whoami' });
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error.code).toBe('internal');
+    const rows = await dbSql.unsafe<{ use_count: number }[]>(
+      `SELECT use_count FROM credentials WHERE id = '${cred.id}'`,
+    );
+    expect(Number(rows[0]?.use_count ?? -1)).toBe(0);
   });
 
   it('does NOT burn a maxUses slot when the proxy is rejected by a guard', async () => {

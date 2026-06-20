@@ -117,6 +117,90 @@ describe('request shaping', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Credential deposit — policy field forwarding
+// ---------------------------------------------------------------------------
+
+describe('depositCredential', () => {
+  it('forwards the usage-policy fields in the request body', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'c1' } });
+
+    await api.depositCredential('p1', {
+      target: 'github.com',
+      label: 'gh',
+      type: 'api_key',
+      secret: 's3cr3t',
+      maxUses: 5,
+      allowedFrom: '2026-01-01T00:00:00.000Z',
+      allowedUntil: '2026-12-31T00:00:00.000Z',
+      requireApproval: true,
+      metadata: { browser: { mode: 'cookie' } },
+    });
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/passports/p1/credentials`);
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toMatchObject({
+      target: 'github.com',
+      label: 'gh',
+      type: 'api_key',
+      secret: 's3cr3t',
+      maxUses: 5,
+      allowedFrom: '2026-01-01T00:00:00.000Z',
+      allowedUntil: '2026-12-31T00:00:00.000Z',
+      requireApproval: true,
+      metadata: { browser: { mode: 'cookie' } },
+    });
+  });
+
+  it('omits policy fields when not provided', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'c2' } });
+
+    await api.depositCredential('p1', {
+      target: 'github.com',
+      label: 'gh',
+      type: 'api_key',
+      secret: 's',
+    });
+
+    const body = JSON.parse((fetchFn.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('maxUses');
+    expect(body).not.toHaveProperty('allowedFrom');
+    expect(body).not.toHaveProperty('requireApproval');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mTLS bind
+// ---------------------------------------------------------------------------
+
+describe('bindAgentMtls', () => {
+  it('POSTs the fingerprint to the agent mtls endpoint', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({
+      body: { id: 'a1', certFingerprint: 'ab'.repeat(32) },
+    });
+
+    const res = await api.bindAgentMtls('a1', { fingerprint: 'AB:'.repeat(31) + 'AB' });
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/agents/a1/mtls`);
+    expect((init as RequestInit).method).toBe('POST');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toEqual({ fingerprint: 'AB:'.repeat(31) + 'AB' });
+    expect(res.certFingerprint).toBe('ab'.repeat(32));
+  });
+
+  it('url-encodes the agent id', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'x', certFingerprint: 'f' } });
+    await api.bindAgentMtls('a/b', { certPem: '-----BEGIN CERTIFICATE-----' });
+    expect(fetchFn.mock.calls[0][0]).toBe(`${API_URL}/v1/agents/a%2Fb/mtls`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Login / logout side effects
 // ---------------------------------------------------------------------------
 

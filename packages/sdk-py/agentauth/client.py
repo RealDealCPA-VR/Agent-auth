@@ -4,11 +4,17 @@ Two clients are provided, mirroring the two authentication surfaces of the API:
 
 * :class:`HumanClient` — authenticated with a human session JWT (Bearer token).
   Used for the management plane: registering principals, opening passports,
-  depositing credentials, issuing/revoking agents, and reading the audit log.
+  depositing credentials (with optional usage policy), issuing/revoking agents,
+  binding mTLS client certs (:meth:`HumanClient.bind_agent_mtls`), starting
+  OAuth flows (:meth:`HumanClient.start_oauth`), reviewing the approvals queue
+  (``list_approvals`` / ``approve_request`` / ``deny_request``), and reading the
+  audit log.
 
 * :class:`AgentAuthClient` — authenticated with an agent API key
   (``aa_<uuid>.<secret>``). Used for the data plane: an agent discovering and
-  using the credentials it has been granted.
+  using the credentials it has been granted — ``use_credential`` (unseal),
+  ``proxy`` (server-side request injection), and ``browser_login`` /
+  ``get_browser_login_plan`` (drive a Playwright page into a logged-in session).
 
 Both are thin wrappers over :mod:`httpx`. Every non-2xx response is translated
 into an :class:`~agentauth.errors.AgentAuthError`. The clients are usable as
@@ -30,8 +36,13 @@ _API_PREFIX = "/v1"
 # Credential ids are UUIDs. We resolve id-vs-target up front (like the TS SDKs)
 # rather than POSTing a target string to /:id/* — the server's :id is a Postgres
 # uuid column, so a non-uuid id is not a clean 404 to fall back on.
+# Match the TS SDKs' RFC-shaped pattern exactly (version nibble 1-5, variant
+# nibble 8-b) so all three clients agree on which strings are ids vs targets. A
+# looser pattern would route e.g. the nil UUID to /:id here but treat it as a
+# target in the TS clients — divergent behaviour for the same argument.
 _UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
 )
 
 _SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -279,6 +290,10 @@ class HumanClient(_BaseClient):
         metadata: Optional[Mapping[str, Any]] = None,
         expires_at: Optional[str] = None,
         injection: Optional[Mapping[str, Any]] = None,
+        max_uses: Optional[int] = None,
+        allowed_from: Optional[str] = None,
+        allowed_until: Optional[str] = None,
+        require_approval: Optional[bool] = None,
     ) -> JSON:
         """Seal a credential into a passport.
 
@@ -296,6 +311,14 @@ class HumanClient(_BaseClient):
 
         Defaults server-side to ``bearer`` (or ``cookie`` for type ``cookie``).
 
+        Optional usage **policy** (all server-enforced; forwarded only when set):
+
+        * ``max_uses`` — cap the number of uses (positive int).
+        * ``allowed_from`` / ``allowed_until`` — ISO-8601 time window in which the
+          credential may be used.
+        * ``require_approval`` — if true, each use queues a human approval request
+          (the agent gets ``202`` -> :class:`ApprovalPendingError`).
+
         Returns the credential metadata (never the secret).
         """
         body: Dict[str, Any] = {
@@ -310,6 +333,14 @@ class HumanClient(_BaseClient):
             body["expiresAt"] = expires_at
         if injection is not None:
             body["injection"] = dict(injection)
+        if max_uses is not None:
+            body["maxUses"] = max_uses
+        if allowed_from is not None:
+            body["allowedFrom"] = allowed_from
+        if allowed_until is not None:
+            body["allowedUntil"] = allowed_until
+        if require_approval is not None:
+            body["requireApproval"] = require_approval
         return self._request(
             "POST", f"/passports/{passport_id}/credentials", json=body
         )
@@ -356,6 +387,33 @@ class HumanClient(_BaseClient):
         """Revoke an agent immediately (fail-closed). Returns ``{id, revoked}``."""
         return self._request("POST", f"/agents/{agent_id}/revoke")
 
+    def bind_agent_mtls(
+        self,
+        agent_id: str,
+        *,
+        cert_pem: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+    ) -> JSON:
+        """Bind an mTLS client certificate to one of your agents.
+
+        Provide **either** a PEM cert (``cert_pem`` — the SHA-256 fingerprint is
+        derived server-side) **or** a pre-computed ``fingerprint``. The agent may
+        then authenticate with that client cert (by fingerprint) as an alternative
+        to its bearer API key. The binding is an idempotent overwrite.
+
+        Returns ``{id, certFingerprint}``.
+
+        Raises:
+            AgentAuthError: ``400`` (neither/invalid input), ``404`` (agent not
+                yours), ``409`` (fingerprint already bound to another agent).
+        """
+        body: Dict[str, Any] = {}
+        if cert_pem is not None:
+            body["certPem"] = cert_pem
+        if fingerprint is not None:
+            body["fingerprint"] = fingerprint
+        return self._request("POST", f"/agents/{agent_id}/mtls", json=body)
+
     # -- audit -------------------------------------------------------------
 
     def list_audit(self, *, limit: Optional[int] = None,
@@ -382,6 +440,39 @@ class HumanClient(_BaseClient):
     def deny_request(self, request_id: str) -> JSON:
         """Deny a pending request. Returns the updated approval request."""
         return self._request("POST", f"/approvals/{request_id}/deny")
+
+    # -- oauth -------------------------------------------------------------
+
+    def start_oauth(
+        self,
+        passport_id: str,
+        provider: str,
+        *,
+        target: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> JSON:
+        """Begin an OAuth authorization-code flow for a passport.
+
+        Mints PKCE + state server-side and returns ``{authorizeUrl, state}``.
+        Send the human's browser to ``authorizeUrl``; the provider redirects back
+        to the server callback, which seals the tokens as an ``oauth_token``
+        credential the agent can reuse (with transparent refresh).
+
+        ``target`` overrides where the credential will be used (defaults to the
+        provider name, server-side); ``label`` overrides the credential label.
+
+        Raises:
+            AgentAuthError: ``404`` (passport not yours / unknown provider),
+                ``500`` (``oauth_misconfigured``), ``400`` (invalid body).
+        """
+        body: Dict[str, Any] = {}
+        if target is not None:
+            body["target"] = target
+        if label is not None:
+            body["label"] = label
+        return self._request(
+            "POST", f"/passports/{passport_id}/oauth/{provider}/start", json=body
+        )
 
 
 class AgentAuthClient(_BaseClient):
@@ -421,7 +512,7 @@ class AgentAuthClient(_BaseClient):
             "GET", "/vault/credentials", params=_page_params(limit, offset)
         )
 
-    def use_credential(self, id_or_target: str, *, limit: int = 100) -> JSON:
+    def use_credential(self, id_or_target: str, *, limit: int = 200) -> JSON:
         """Unseal and return a credential, by id **or** by target host.
 
         If ``id_or_target`` is a credential id (UUID) it is used directly.
@@ -447,7 +538,7 @@ class AgentAuthClient(_BaseClient):
         query: Optional[Mapping[str, str]] = None,
         headers: Optional[Mapping[str, str]] = None,
         body: Optional[str] = None,
-        limit: int = 100,
+        limit: int = 200,
     ) -> JSON:
         """Make a downstream request **through the vault**, by id or target.
 
@@ -480,6 +571,58 @@ class AgentAuthClient(_BaseClient):
             cred_id, method=method, path=path,
             query=query, headers=headers, body=body,
         )
+
+    def get_browser_login_plan(self, id_or_target: str, *, limit: int = 200) -> JSON:
+        """Fetch a browser-login *plan* for a credential, by id **or** target.
+
+        ``id_or_target`` is resolved exactly like :meth:`use_credential`: a UUID
+        is used as the credential **id** directly; anything else is resolved as a
+        **target** against the agent's visible credentials.
+
+        The plan **carries secret material** (same trust level as
+        :meth:`use_credential`) and is keyed on ``mode``::
+
+            cookie:       {"mode","target","url","cookies":[...]}
+            header:       {"mode","target","url","headers":{...}}
+            localStorage: {"mode","target","origin","url","items":{...}}
+            form:         {"mode","target","url","actions":[...],"successUrlIncludes"?}
+
+        The agent key needs the **`vault:use`** scope and the target must be
+        scoped (like :meth:`use_credential`).
+
+        Raises:
+            AgentAuthError: for the standard error envelope (``403`` missing
+                ``vault:use`` / target not scoped, ``404`` not found, ``410``
+                expired, ``422`` no/invalid browser spec — ``no_browser_spec`` /
+                ``bad_browser_spec`` / ``missing_username``, ``429`` use-limit
+                reached, ...).
+            ApprovalPendingError: ``202`` when human approval is required.
+        """
+        cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
+        return self._browser_login_by_id(cred_id)
+
+    def browser_login(self, page: Any, id_or_target: str, *, limit: int = 200) -> JSON:
+        """Log a Playwright **sync** ``page`` into a credential's target.
+
+        Fetches the plan via :meth:`get_browser_login_plan` and applies it to the
+        duck-typed ``page`` (see :mod:`agentauth.browser`). Returns a **non-secret
+        summary** ``{mode, target, url, ...names/counts}`` — never a cookie/header/
+        storage/form value. The actual secret material is applied to the page and
+        is not echoed back.
+
+        ``page`` is duck-typed: only the methods the plan needs are called
+        (``page.context.add_cookies`` / ``page.context.set_extra_http_headers`` /
+        ``page.goto`` / ``page.evaluate`` / ``page.fill`` / ``page.click``), so
+        Playwright is never imported by the SDK.
+
+        Raises the same errors as :meth:`get_browser_login_plan`.
+        """
+        # Imported lazily so the SDK has no top-level dependency on this helper's
+        # (duck-typed) Playwright assumptions; mirrors browser.py's import policy.
+        from .browser import apply_browser_login
+
+        plan = self.get_browser_login_plan(id_or_target, limit=limit)
+        return apply_browser_login(page, plan)
 
     # -- internals ---------------------------------------------------------
 
@@ -526,6 +669,11 @@ class AgentAuthClient(_BaseClient):
     def _use_by_id(self, credential_id: str) -> JSON:
         return self._request(
             "POST", f"/vault/credentials/{credential_id}/use"
+        )
+
+    def _browser_login_by_id(self, credential_id: str) -> JSON:
+        return self._request(
+            "POST", f"/vault/credentials/{credential_id}/browser-login"
         )
 
     def _resolve_target(self, target: str, *, limit: int) -> Optional[str]:

@@ -656,6 +656,350 @@ def test_use_credential_202_raises_approval_pending():
     assert exc.value.request_id == "req_99"
 
 
+def test_deposit_credential_forwards_policy_fields():
+    seen: Dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        return ok({"id": "c-policy"}, status=201)
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    client.deposit_credential(
+        "pp1", target="api.x.com", label="X", type="api_key", secret="s",
+        max_uses=5,
+        allowed_from="2030-01-01T00:00:00Z",
+        allowed_until="2031-01-01T00:00:00Z",
+        require_approval=True,
+    )
+    assert seen["body"]["maxUses"] == 5
+    assert seen["body"]["allowedFrom"] == "2030-01-01T00:00:00Z"
+    assert seen["body"]["allowedUntil"] == "2031-01-01T00:00:00Z"
+    assert seen["body"]["requireApproval"] is True
+
+
+def test_deposit_credential_omits_policy_fields_when_absent():
+    seen: Dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        return ok({"id": "c2"}, status=201)
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    client.deposit_credential("pp1", target="x", label="l", type="password",
+                              secret="s")
+    for k in ("maxUses", "allowedFrom", "allowedUntil", "requireApproval"):
+        assert k not in seen["body"]
+
+
+# --------------------------------------------------------------------------
+# HumanClient — mTLS bind + OAuth start
+# --------------------------------------------------------------------------
+
+def test_bind_agent_mtls_with_cert_pem():
+    seen: Dict[str, Any] = {}
+    aid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == f"/v1/agents/{aid}/mtls"
+        seen["body"] = body_of(request)
+        return ok({"id": aid, "certFingerprint": "ab" * 32})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    out = client.bind_agent_mtls(aid, cert_pem="-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----")
+    assert out == {"id": aid, "certFingerprint": "ab" * 32}
+    assert seen["body"] == {
+        "certPem": "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----"
+    }
+    assert "fingerprint" not in seen["body"]
+
+
+def test_bind_agent_mtls_with_fingerprint():
+    seen: Dict[str, Any] = {}
+    aid = "11111111-1111-4111-8111-111111111111"
+    fp = "cd" * 32
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        return ok({"id": aid, "certFingerprint": fp})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    out = client.bind_agent_mtls(aid, fingerprint=fp)
+    assert out["certFingerprint"] == fp
+    assert seen["body"] == {"fingerprint": fp}
+    assert "certPem" not in seen["body"]
+
+
+def test_start_oauth_returns_authorize_url_and_state():
+    seen: Dict[str, Any] = {}
+    pid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == f"/v1/passports/{pid}/oauth/github/start"
+        seen["body"] = body_of(request)
+        return ok({"authorizeUrl": "https://github.com/login/oauth/authorize?x=1",
+                   "state": "st_123"})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    out = client.start_oauth(pid, "github", target="github.com", label="GH OAuth")
+    assert out == {"authorizeUrl": "https://github.com/login/oauth/authorize?x=1",
+                   "state": "st_123"}
+    assert seen["body"] == {"target": "github.com", "label": "GH OAuth"}
+
+
+def test_start_oauth_omits_optional_fields_when_absent():
+    seen: Dict[str, Any] = {}
+    pid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = body_of(request)
+        return ok({"authorizeUrl": "https://x/auth", "state": "st"})
+
+    client = HumanClient(BASE, token="t", transport=make_transport(handler))
+    client.start_oauth(pid, "google")
+    assert seen["body"] == {}
+
+
+# --------------------------------------------------------------------------
+# AgentAuthClient — browser-login plan + apply
+# --------------------------------------------------------------------------
+
+def test_get_browser_login_plan_by_id_hits_endpoint_directly():
+    calls: List[str] = []
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "cookie", "target": "github.com",
+            "url": "https://github.com",
+            "cookies": [{"name": "sid", "value": "SECRET", "path": "/"}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        assert request.url.path == f"/v1/vault/credentials/{cid}/browser-login"
+        assert request.method == "POST"
+        return ok(plan)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    out = client.get_browser_login_plan(cid)
+    assert out == plan
+    assert calls == [f"POST /v1/vault/credentials/{cid}/browser-login"]
+
+
+def test_get_browser_login_plan_by_target_resolves_via_listing():
+    calls: List[str] = []
+    gh = "22222222-2222-4222-8222-222222222222"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/v1/vault/credentials":
+            return ok({"items": [{"id": "c-other", "target": "gitlab.com"},
+                                  {"id": gh, "target": "github.com"}],
+                       "pagination": {"limit": 100, "offset": 0,
+                                      "total": 2, "returned": 2}})
+        if request.url.path == f"/v1/vault/credentials/{gh}/browser-login":
+            return ok({"mode": "header", "target": "github.com",
+                       "url": "https://github.com", "headers": {"Authorization": "x"}})
+        raise AssertionError(request.url.path)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    out = client.get_browser_login_plan("github.com")
+    assert out["mode"] == "header"
+    assert calls == [
+        "GET /v1/vault/credentials",
+        f"POST /v1/vault/credentials/{gh}/browser-login",
+    ]
+
+
+def test_get_browser_login_plan_202_raises_approval_pending():
+    from agentauth import ApprovalPendingError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"status": "pending", "requestId": "req_bl",
+                                         "message": "awaiting approval"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    with pytest.raises(ApprovalPendingError) as exc:
+        client.get_browser_login_plan("33333333-3333-4333-8333-333333333333")
+    assert exc.value.status == 202
+    assert exc.value.request_id == "req_bl"
+
+
+class FakeContext:
+    """Records context-level Playwright calls."""
+
+    def __init__(self) -> None:
+        self.added_cookies: Any = None
+        self.extra_headers: Any = None
+
+    def add_cookies(self, cookies: Any) -> None:
+        self.added_cookies = cookies
+
+    def set_extra_http_headers(self, headers: Any) -> None:
+        self.extra_headers = headers
+
+
+class FakePage:
+    """A duck-typed Playwright sync page that records all calls.
+
+    Exposes ``url`` as a property (like Playwright sync) reflecting the last goto;
+    a submit ``click`` advances it to ``post_submit_url`` when set, simulating the
+    post-login redirect so the ``submitted`` summary flag can be exercised.
+    """
+
+    def __init__(self) -> None:
+        self.context = FakeContext()
+        self.calls: List[Any] = []
+        self._url = ""
+        self.post_submit_url: Any = None
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    def goto(self, url: str) -> None:
+        self.calls.append(("goto", url))
+        self._url = url
+
+    def evaluate(self, script: str, arg: Any) -> None:
+        self.calls.append(("evaluate", script, arg))
+
+    def fill(self, selector: str, value: str) -> None:
+        self.calls.append(("fill", selector, value))
+
+    def click(self, selector: str) -> None:
+        self.calls.append(("click", selector))
+        if self.post_submit_url is not None:
+            self._url = self.post_submit_url
+
+
+def _assert_no_secret(summary: Dict[str, Any], secret: str) -> None:
+    """The summary (recursively) must not contain the secret value anywhere."""
+    import json as _json
+    assert secret not in _json.dumps(summary)
+
+
+def _make_plan_client(plan: Dict[str, Any]) -> AgentAuthClient:
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/v1/vault/credentials/{cid}/browser-login"
+        return ok(plan)
+
+    return AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+
+
+def test_browser_login_cookie_mode_applies_and_summary_has_no_secret():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "cookie", "target": "github.com", "url": "https://github.com/home",
+            "cookies": [{"name": "sid", "value": "SUPERSECRET", "path": "/"},
+                        {"name": "csrf", "value": "TOKEN2", "path": "/"}]}
+    page = FakePage()
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert page.context.added_cookies == plan["cookies"]
+    assert ("goto", "https://github.com/home") in page.calls
+    assert summary == {"mode": "cookie", "target": "github.com",
+                       "url": "https://github.com/home",
+                       "cookie_names": ["sid", "csrf"]}
+    _assert_no_secret(summary, "SUPERSECRET")
+    _assert_no_secret(summary, "TOKEN2")
+
+
+def test_browser_login_header_mode_applies_and_summary_has_no_secret():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "header", "target": "api.x.com", "url": "https://api.x.com/",
+            "headers": {"Authorization": "Bearer SECRETVAL", "X-Key": "K2"}}
+    page = FakePage()
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert page.context.extra_headers == plan["headers"]
+    assert ("goto", "https://api.x.com/") in page.calls
+    assert summary == {"mode": "header", "target": "api.x.com",
+                       "url": "https://api.x.com/",
+                       "header_names": ["Authorization", "X-Key"]}
+    _assert_no_secret(summary, "SECRETVAL")
+    _assert_no_secret(summary, "K2")
+
+
+def test_browser_login_local_storage_mode_applies_and_summary_has_no_secret():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "localStorage", "target": "app.x.com",
+            "origin": "https://app.x.com", "url": "https://app.x.com/",
+            "items": {"token": "LSSECRET", "rt": "REFRESHSECRET"}}
+    page = FakePage()
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    # goto must happen before evaluate.
+    assert page.calls[0] == ("goto", "https://app.x.com/")
+    kind, script, arg = page.calls[1]
+    assert kind == "evaluate"
+    assert "localStorage.setItem" in script
+    assert arg == plan["items"]
+    assert summary == {"mode": "localStorage", "target": "app.x.com",
+                       "url": "https://app.x.com/",
+                       "storage_keys": ["token", "rt"]}
+    _assert_no_secret(summary, "LSSECRET")
+    _assert_no_secret(summary, "REFRESHSECRET")
+
+
+def test_browser_login_form_mode_applies_and_summary_has_no_secret():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "login.x.com", "url": "https://login.x.com/",
+            "actions": [
+                {"type": "goto", "url": "https://login.x.com/signin"},
+                {"type": "fill", "selector": "#user", "value": "alice"},
+                {"type": "fill", "selector": "#pass", "value": "PWSECRET"},
+                {"type": "click", "selector": "#submit"},
+            ],
+            "successUrlIncludes": "/dashboard"}
+    page = FakePage()
+    # Simulate the post-login redirect to the dashboard after the submit click.
+    page.post_submit_url = "https://login.x.com/dashboard"
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    assert page.calls == [
+        ("goto", "https://login.x.com/signin"),
+        ("fill", "#user", "alice"),
+        ("fill", "#pass", "PWSECRET"),
+        ("click", "#submit"),
+    ]
+    # filled_fields is a COUNT (matches the TS summary contract), and `submitted`
+    # is present only because the plan carries successUrlIncludes and the landing
+    # URL contains it.
+    assert summary == {"mode": "form", "target": "login.x.com",
+                       "url": "https://login.x.com/",
+                       "filled_fields": 2,
+                       "submitted": True}
+    _assert_no_secret(summary, "PWSECRET")
+    _assert_no_secret(summary, "alice")
+
+
+def test_browser_login_form_mode_omits_submitted_without_success_hint():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "login.x.com", "url": "https://login.x.com/",
+            "actions": [
+                {"type": "fill", "selector": "#pass", "value": "PWSECRET"},
+                {"type": "click", "selector": "#submit"},
+            ]}
+    page = FakePage()
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+
+    # No successUrlIncludes in the plan -> `submitted` key is omitted entirely.
+    assert "submitted" not in summary
+    assert summary["filled_fields"] == 1
+
+
+def test_apply_browser_login_unknown_mode_raises():
+    from agentauth.browser import apply_browser_login
+
+    with pytest.raises(ValueError):
+        apply_browser_login(FakePage(), {"mode": "telepathy"})
+
+
 def test_human_approval_methods():
     seen = {}
 

@@ -4,6 +4,7 @@ import { and, eq, desc, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { requireHuman } from './guards.js';
 import { createPassport, depositCredential } from '../lib/vault.js';
+import { precheckBrowserSpec } from '../lib/browser.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
@@ -167,6 +168,21 @@ export async function passportRoutes(app: FastifyInstance): Promise<void> {
       const parsed = depositSchema.safeParse(req.body);
       if (!parsed.success)
         return fail(req, reply, 400, 'invalid_request', 'invalid body', parsed.error.flatten());
+
+      // If a browser-login spec is supplied, validate its shape, host-pinning, and
+      // (for forms) username availability NOW — so a misconfigured spec is caught by
+      // the human owner at deposit, not deferred to an agent's later browser-login.
+      const browserSpec = (parsed.data.metadata as Record<string, unknown> | undefined)?.browser;
+      if (browserSpec !== undefined) {
+        const pre = precheckBrowserSpec(
+          parsed.data.type,
+          parsed.data.target,
+          parsed.data.metadata,
+          browserSpec,
+        );
+        if (pre)
+          return fail(req, reply, 400, 'invalid_request', `invalid metadata.browser: ${pre.message}`);
+      }
 
       const row = await depositCredential({ passportId: id, ...parsed.data });
       if (!row) return fail(req, reply, 404, 'not_found', 'passport not found');

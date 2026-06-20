@@ -196,7 +196,13 @@ async function freshOauthAccessToken(
     }
 
     const reSealed = seal(dek, Buffer.from(JSON.stringify(updated), 'utf8'), aad);
+    // Merge over the existing metadata rather than replacing it, so user-supplied
+    // hints (e.g. username, browser-login spec, custom fields deposited via
+    // depositCredential's metadata option) survive a refresh — only the
+    // refresh-owned keys (provider/scope/tokenExpiresAt) are overwritten.
+    const prevMeta = (cred.metadata ?? {}) as Record<string, unknown>;
     const newMetadata = {
+      ...prevMeta,
       provider: provider.name,
       scope: updated.scope,
       tokenExpiresAt: updated.expires_at,
@@ -231,6 +237,32 @@ export async function getCredentialTarget(
   if (!UUID_RE.test(credentialId)) return null;
   const [row] = await db
     .select({ target: schema.credentials.target })
+    .from(schema.credentials)
+    .where(
+      and(eq(schema.credentials.id, credentialId), eq(schema.credentials.passportId, passportId)),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Read a credential's target + type + (non-secret) metadata WITHOUT unsealing or
+ * charging a use. Lets the browser-login route validate the configured browser
+ * spec (which lives in metadata.browser) before reserving a use, so a
+ * misconfigured credential never burns a maxUses slot. Returns null for a
+ * malformed/unknown id (same semantics as a not_found use).
+ */
+export async function getCredentialMeta(
+  passportId: string,
+  credentialId: string,
+): Promise<{ target: string; type: string; metadata: unknown } | null> {
+  if (!UUID_RE.test(credentialId)) return null;
+  const [row] = await db
+    .select({
+      target: schema.credentials.target,
+      type: schema.credentials.type,
+      metadata: schema.credentials.metadata,
+    })
     .from(schema.credentials)
     .where(
       and(eq(schema.credentials.id, credentialId), eq(schema.credentials.passportId, passportId)),
@@ -291,7 +323,14 @@ export async function useCredential(
   // here (single-use); on approval we fall through to unseal.
   let consumedGrantId: string | null = null;
   if (cred.requireApproval) {
-    const decision = await requestOrConsume(passportId, credentialId, opts.agentId!);
+    // The approval path materializes/consumes a row keyed by the calling agent.
+    // agentId is optional on this function's contract but mandatory here (the
+    // approval_requests.agent_id column is NOT NULL). Every route passes it, so
+    // this is a latent-contract guard: without an agent identity an
+    // approval-gated credential is simply not usable — fail closed as not_found
+    // rather than letting an undefined id reach the insert and surface as a 500.
+    if (!opts.agentId) return { status: 'not_found' };
+    const decision = await requestOrConsume(passportId, credentialId, opts.agentId);
     if (decision.decision === 'pending')
       return { status: 'approval_pending', requestId: decision.requestId };
     if (decision.decision === 'denied') return { status: 'approval_denied' };

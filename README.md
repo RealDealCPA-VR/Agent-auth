@@ -111,6 +111,65 @@ at deposit time (`injection`: `bearer` · `basic` · `cookie` · `header` ·
 returns no secret, you can issue **proxy-only agents** — grant `vault:proxy`
 **without** `vault:use` and the agent can act through credentials it can never read.
 
+### 🖥️ Browser-login mode — drive a real browser as you
+
+Some "logins" aren't an API call — they're a web app behind a cookie, a stored
+session, or a form. `POST /v1/vault/credentials/:id/browser-login` (agent key,
+scope **`vault:use`**) turns a credential into a concrete **browser-login plan**:
+a small set of instructions ("set these cookies", "fill this login form", "set
+this auth header", "seed this `localStorage` key") that an agent driving a real
+browser — Playwright, Puppeteer, computer-use — applies to a page to become
+authenticated.
+
+**Trust model, stated honestly.** The returned plan **carries secret material**
+(the cookie value, auth header, or the password typed into the form). It is the
+**same trust level as `/use`** — secret material reaches the caller. The strong
+"the secret never reaches the agent" guarantee remains **proxy mode** (HTTP
+only). For browser use, the meaningful boundary is the **SDK helper**: it applies
+the plan to a `page` object and **confines the secret to the SDK process's
+memory** — it returns only a non-secret summary, never handing the values back up
+to the agent's reasoning/LLM layer. The server audits `mode` + `target` only; the
+plan and its secret are never logged.
+
+**The non-secret spec lives in `metadata.browser`** on the credential (set at
+deposit time / in the admin UI). It describes *where* the secret goes without
+containing it, so it can travel in listing metadata and be edited safely. Four
+spec shapes:
+
+| `mode`         | Spec fields                                                                                  | Default for type     |
+| -------------- | -------------------------------------------------------------------------------------------- | -------------------- |
+| `cookie`       | `{ cookies?, url? }` — when `cookies` is omitted the secret is parsed as a `name=value; name2=value2` string | `cookie`             |
+| `header`       | `{ header?, prefix?, url? }` — defaults to `Authorization: Bearer <secret>`                   | `api_key` · `oauth_token` |
+| `localStorage` | `{ origin, key, url? }` — sets `localStorage[key] = secret` on `origin`                       | —                    |
+| `form`         | `{ url, fields:[{selector, valueFrom:"secret"\|"username"} \| {selector, value}], submitSelector?, successUrlIncludes? }` | —          |
+
+`cookie`, `api_key`, and `oauth_token` credentials get a sensible default plan
+with no spec at all. A **`password`** credential has no safe default — it
+requires an explicit `form` spec, else the call returns **`422 no_browser_spec`**.
+The response is the matching plan shape: `cookie` (cookies to set), `header`
+(headers to set), `localStorage` (items to seed), or `form` (an ordered
+`actions` list of `goto` / `fill` / `click`).
+
+```ts
+import { AgentAuthClient } from '@agentauth/sdk';
+import { chromium } from 'playwright';
+
+const aa = new AgentAuthClient({ baseUrl, apiKey });           // scope vault:use
+const browser = await chromium.launch();
+const page = await browser.newPage();
+
+// Fetch the plan, apply it to the page, and get back a NON-secret summary.
+// The secret flows only into the browser — never into this return value or a log.
+const summary = await aa.browserLogin(page, 'app.example.com');
+console.log('logged in via', summary.mode);                   // e.g. "cookie"
+await page.goto('https://app.example.com/dashboard');         // now authenticated
+```
+
+The SDK surface is `browserLogin(page, target)` and `getBrowserLoginPlan(target)`
+(Python: `browser_login` / `get_browser_login_plan`; MCP tool: `browser_login`).
+Prefer `browserLogin` — it fetches the plan and confines the secret in one step;
+`getBrowserLoginPlan` is the secret-bearing escape hatch for advanced callers.
+
 ### 🛡️ Hardened on every layer
 
 Argon2id password & key hashing · constant-time login (no user enumeration) ·
@@ -203,6 +262,7 @@ curl -s $BASE/v1/agents/<agentId>/revoke -X POST -H "authorization: Bearer $TOKE
 | Agents    | `POST/GET /v1/agents`, `POST /v1/agents/:id/revoke`                  | Human     |
 | **Vault** | `GET /v1/vault/credentials`, `POST /v1/vault/credentials/:id/use`    | **Agent** |
 | **Proxy** | `POST /v1/vault/credentials/:id/proxy` (secret-free; `vault:proxy`)  | **Agent** |
+| **Browser** | `POST /v1/vault/credentials/:id/browser-login` (login plan; `vault:use`) | **Agent** |
 | Audit     | `GET /v1/audit`, `GET /v1/audit/verify`                              | Human     |
 | Ops       | `GET /healthz`, `/readyz`, `/metrics`, `/docs`                       | —         |
 
@@ -227,7 +287,7 @@ src/
   routes/           principals · passports · agents · vault · audit · guards
 ```
 
-## 🧪 Tested like a vault — 173 tests, all green
+## 🧪 Tested like a vault — a comprehensive unit + integration suite across server, SDKs, and web, all green
 
 - **Crypto unit tests** — round-trips, tamper rejection, AAD binding, wrong-key
   failure, format-version & algorithm checks, key-id tagging, rotation.
@@ -273,7 +333,7 @@ single request.
 
 - 🔐 **KMS-backed keys** — `KEY_PROVIDER=kms` keeps the master key in AWS KMS; the in-process key never holds it. Local AES-GCM KEK is the default.
 - 🔁 **Zero-downtime key rotation** — KEK, JWT signing key, and audit HMAC key are all versioned and rotatable. See the [rotation runbook](./docs/ROTATION.md); the re-wrap runs via `pnpm db:rotate` (local) / `node dist/db/rotate-keys.js` (in the shipped image).
-- 🪪 **OAuth credential capture** — authorize a provider in the browser once (PKCE auth-code); AgentAuth seals the tokens and **transparently refreshes** them when an agent uses the credential.
+- 🪪 **OAuth credential capture** — authorize a provider in the browser once (PKCE auth-code); AgentAuth seals the tokens and **transparently refreshes** them when an agent uses the credential. Proactive refresh requires the provider to return `expires_in` (so expiry is known); a provider that issues a `refresh_token` but **omits** `expires_in` is treated as freshness-unknown and is **not** proactively refreshed — configure such providers to return `expires_in`, or a server-side expiry surfaces as a downstream `401`.
 - 📜 **Per-credential policies** — max-uses, time windows, and **human approval workflows** (request → approve → single-use grant) gate sensitive credentials.
 - 🌐 **mTLS agent identity** — agents can authenticate with a client certificate (native or proxy-terminated) instead of a bearer key.
 - 🔌 **TLS termination** — native HTTPS (`HTTPS_CERT`/`HTTPS_KEY`) or front it with a proxy.

@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { schema } from '../db/index.js';
 import { requireAgent } from './guards.js';
 import { hasScope, allowsTarget } from '../auth/agent.js';
-import { useCredential, getCredentialTarget, releaseUse } from '../lib/vault.js';
+import { useCredential, getCredentialTarget, getCredentialMeta, releaseUse } from '../lib/vault.js';
 import { proxyRequest, precheckProxyTarget } from '../lib/proxy.js';
+import { buildBrowserPlan, precheckBrowserSpec } from '../lib/browser.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
@@ -374,6 +375,127 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       // the agent: it is injected server-side, and redacted from the returned
       // body and headers should the downstream reflect it.
       return reply.send(outcome.response);
+    },
+  );
+
+  // Browser-login mode: turn a credential into a concrete plan of browser actions
+  // (set cookies / fill a login form / set an auth header) so an agent driving a
+  // real browser can authenticate to a web app. Like /use, the returned plan
+  // CARRIES secret material (it is the same vault:use trust level); the meaningful
+  // "secret stays out of the agent's reasoning" boundary is the SDK helper, which
+  // applies the plan to a page and never returns its values up to the caller.
+  app.post(
+    '/v1/vault/credentials/:id/browser-login',
+    {
+      schema: {
+        tags: ['vault'],
+        summary: 'Build a browser-login plan (cookies/form/header) for a credential',
+        security: [{ agentKey: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const agent = req.agent!;
+
+      const deny = async (reason: string, status = 403, code = 'forbidden', msg = reason) => {
+        await audit({
+          action: 'credential.browser',
+          success: false,
+          agentId: agent.agentId,
+          passportId: agent.passportId,
+          credentialId: id,
+          detail: { reason, via: 'browser' },
+          ip: req.ip,
+        });
+        return fail(req, reply, status, code, msg);
+      };
+
+      // Browser-login returns secret material, so it is gated on vault:use (same
+      // trust level as /use), not the never-reaches-agent vault:proxy scope.
+      if (!hasScope(agent.scopes, 'vault:use')) return deny('missing scope: vault:use');
+
+      // Validate target-scope AND that a plan can be built (spec present/valid,
+      // username available) BEFORE charging a use — so a misconfigured or
+      // out-of-scope call never burns a maxUses slot or spends an approval grant.
+      const meta = await getCredentialMeta(agent.passportId, id);
+      if (!meta) return deny('not_found', 404, 'not_found', 'credential not found');
+      if (!allowsTarget(agent.scopes, meta.target)) {
+        return deny(
+          `target_not_allowed:${meta.target}`,
+          403,
+          'forbidden',
+          `agent not scoped for target: ${meta.target}`,
+        );
+      }
+      const browserSpec = (meta.metadata as Record<string, unknown> | null)?.browser ?? null;
+      const pre = precheckBrowserSpec(meta.type, meta.target, meta.metadata, browserSpec);
+      if (pre) {
+        // A host-pin violation is the same authorization class as the proxy
+        // route's off-host rejection — surface it as 403 forbidden_target for
+        // cross-route consistency; genuine spec-shape/username errors stay 422.
+        const status = pre.reason === 'forbidden_target' ? 403 : 422;
+        return deny(pre.reason, status, pre.reason, pre.message);
+      }
+
+      const result = await useCredential(agent.passportId, id, { agentId: agent.agentId });
+      if (result.status === 'not_found')
+        return deny('not_found', 404, 'not_found', 'credential not found');
+      if (result.status === 'expired')
+        return deny('expired', 410, 'expired', 'credential has expired');
+      if (result.status === 'not_yet_valid')
+        return deny('not_yet_valid', 403, 'not_yet_valid', 'credential is not yet usable');
+      if (result.status === 'window_expired')
+        return deny('window_expired', 410, 'window_expired', 'credential usage window has ended');
+      if (result.status === 'use_limit')
+        return deny('use_limit', 429, 'use_limit_reached', 'credential use limit reached');
+      if (result.status === 'approval_denied')
+        return deny('approval_denied', 403, 'approval_denied', 'use was denied by an owner');
+      if (result.status === 'approval_pending') {
+        await audit({
+          action: 'credential.browser',
+          success: false,
+          agentId: agent.agentId,
+          passportId: agent.passportId,
+          credentialId: id,
+          detail: { reason: 'approval_pending', via: 'browser', requestId: result.requestId },
+          ip: req.ip,
+        });
+        return reply
+          .code(202)
+          .send({ status: 'pending', requestId: result.requestId, message: 'awaiting approval' });
+      }
+      if (result.status === 'refresh_failed')
+        return deny('refresh_failed', 502, 'oauth_refresh_failed', 'failed to refresh oauth token');
+      if (result.status === 'decrypt_error')
+        return deny('decrypt_error', 500, 'internal', 'failed to unseal credential');
+
+      const built = buildBrowserPlan({
+        target: result.target,
+        type: result.type,
+        secret: result.secret,
+        metadata: result.metadata,
+        spec: (result.metadata as Record<string, unknown> | null)?.browser ?? null,
+      });
+      if (!built.ok) {
+        // The use was charged but no usable plan came back (e.g. an empty-secret
+        // cookie): refund so a misconfig never bricks a maxUses:1 credential.
+        await releaseUse(agent.passportId, id, result.consumedGrantId);
+        const status = built.reason === 'forbidden_target' ? 403 : 422;
+        return deny(built.reason, status, built.reason, built.message);
+      }
+
+      await audit({
+        action: 'credential.browser',
+        success: true,
+        agentId: agent.agentId,
+        passportId: agent.passportId,
+        credentialId: id,
+        // Never log the plan/secret; record target + mode only.
+        detail: { target: result.target, type: result.type, via: 'browser', mode: built.plan.mode },
+        ip: req.ip,
+      });
+
+      return reply.send(built.plan);
     },
   );
 }

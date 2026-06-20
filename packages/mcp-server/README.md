@@ -13,6 +13,12 @@ gains three tools:
 | `use_credential`   | `{ idOrTarget: string }` | The unsealed credential **including the live `secret`**, fully audited server-side. |
 | `proxy_request`    | `{ idOrTarget: string, method?, path?, query?, headers?, body? }` | The downstream `{ status, headers, body }` — AgentAuth makes the request with the credential injected server-side; **the secret is never exposed to the agent**. |
 
+> **Browser-login is an SDK feature, not an MCP tool.** Its whole point is that an
+> SDK helper applies the login plan to a real browser **page** so the secret stays
+> out of the agent's reasoning. A stdio MCP bridge has no page to apply a plan to,
+> so exposing it here would only dump live secret values into the model's context.
+> Use the TypeScript or Python SDK's `browserLogin(page, target)` for browser use.
+
 The agent discovers what it's scoped for with `list_credentials`, then either
 unseals exactly one secret for use with `use_credential` — identified by
 credential UUID **or** by target (e.g. `github.com`, resolved against the
@@ -100,6 +106,9 @@ and `proxy_request` tools available — no application code required.
   headers?, body? }`. AgentAuth performs the downstream request itself with the
   credential injected and returns `{ status, headers, body }` (secret redacted) —
   requires the agent key to hold the **`vault:proxy`** scope.
+- **Browser-login** is deliberately not an MCP tool — it is an SDK feature
+  (`browserLogin(page, target)`) so the login plan is applied to a real browser
+  page and the secret never enters the model's context. See `@agentauth/sdk`.
 - **Errors** are mapped to readable tool errors with the AgentAuth status + code
   and an actionable hint: `401` (bad key), `403` (scope/target denied), `404`
   (no such credential), `410` (expired / outside window), `429` (rate / use-limit),

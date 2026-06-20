@@ -87,6 +87,11 @@ export interface ProxyResponse {
   body: string;
 }
 
+// Browser-login is intentionally NOT implemented in this MCP client: a stdio
+// bridge has no browser page to apply a plan to, so it would only surface live
+// secret values to the model. Browser-login lives in the TS/Python SDKs, whose
+// helpers apply the plan to a page and never return the values to the caller.
+
 /** The server's error envelope shape. */
 interface ErrorEnvelope {
   error?: {

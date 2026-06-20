@@ -106,7 +106,17 @@ export async function refreshToken(provider: OAuthProvider, current: TokenSet): 
   return toTokenSet(json, Date.now(), current.refresh_token, current.scope);
 }
 
-/** True if the access token is missing an expiry-in-future (expired / within skew). */
+/**
+ * True if the access token is missing an expiry-in-future (expired / within skew).
+ *
+ * Transparent proactive refresh requires the provider to return `expires_in` at
+ * capture/refresh (so `expires_at` is known). A provider that issues a
+ * refresh_token but OMITS expires_in (`expires_at === null`) is treated as
+ * "freshness unknown" and is NOT refreshed proactively — refreshing on every use
+ * would be wasteful and most such tokens are long-lived. Configure such providers
+ * to return expires_in for transparent refresh; otherwise a server-side expiry is
+ * surfaced as a downstream 401 to the caller. See docs/ROTATION.md / README.
+ */
 export function needsRefresh(tokens: TokenSet, skewMs = 60_000): boolean {
   if (!tokens.refresh_token) return false;
   if (tokens.expires_at === null) return false;

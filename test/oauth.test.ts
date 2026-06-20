@@ -101,6 +101,24 @@ async function expireStoredToken(passportId: string, credentialId: string, targe
   dek.fill(0);
 }
 
+/** Re-seal arbitrary (here: non-JSON) plaintext into the credential, preserving AAD. */
+async function resealRaw(passportId: string, credentialId: string, target: string, raw: string) {
+  const { db, schema } = dbmod;
+  const [p] = await db
+    .select({ wrappedDek: schema.passports.wrappedDek })
+    .from(schema.passports)
+    .where(eq(schema.passports.id, passportId))
+    .limit(1);
+  const dek = await keyprovider.unwrapDek(p!.wrappedDek as never);
+  const aad = Buffer.from(`${passportId}:${target}`);
+  const reSealed = envelope.seal(dek, Buffer.from(raw, 'utf8'), aad);
+  await db
+    .update(schema.credentials)
+    .set({ sealed: reSealed })
+    .where(eq(schema.credentials.id, credentialId));
+  dek.fill(0);
+}
+
 describe('OAuth credential capture', () => {
   it('start returns authorizeUrl + state and creates a flow', async () => {
     const t = await helpers.registerAndLogin(app);
@@ -129,6 +147,31 @@ describe('OAuth credential capture', () => {
       .where(eq(schema.oauthFlows.state, body.state));
     expect(flows).toHaveLength(1);
     expect(flows[0]!.provider).toBe('mock');
+  });
+
+  it('renders an HTML success page with escaped values when the callback Accept is text/html', async () => {
+    const { token } = await helpers.registerAndLogin(app);
+    const pp = await helpers.createPassport(app, token);
+    const startRes = await app.inject({
+      method: 'POST',
+      url: `/v1/passports/${pp}/oauth/mock/start`,
+      headers: helpers.auth(token),
+      payload: { target: 'api.mock.test', label: '<script>alert(1)</script>' },
+    });
+    const start = startRes.json();
+
+    const cbRes = await app.inject({
+      method: 'GET',
+      url: `/v1/oauth/callback?code=mock-auth-code&state=${encodeURIComponent(start.state)}`,
+      headers: { accept: 'text/html' },
+    });
+    expect(cbRes.statusCode).toBe(200);
+    expect(cbRes.headers['content-type']).toContain('text/html');
+    // The malicious label is HTML-escaped, never reflected as a live tag.
+    expect(cbRes.body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(cbRes.body).not.toContain('<script>alert(1)</script>');
+    // The opener-notify signal is present.
+    expect(cbRes.body).toContain('agentauth:oauth-captured');
   });
 
   it('callback exchanges the code and creates an oauth_token credential', async () => {
@@ -272,5 +315,80 @@ describe('OAuth credential capture', () => {
     });
     expect(useRes.statusCode).toBe(502);
     expect(useRes.json().error.code).toBe('oauth_refresh_failed');
+  });
+
+  it('start with an unknown provider returns 404 unknown_provider', async () => {
+    const { token } = await helpers.registerAndLogin(app);
+    const pp = await helpers.createPassport(app, token);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/passports/${pp}/oauth/nope/start`,
+      headers: helpers.auth(token),
+      payload: {},
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('unknown_provider');
+  });
+
+  it('callback returns 502 oauth_exchange_failed when the code exchange fails, and consumes the flow', async () => {
+    const { token } = await helpers.registerAndLogin(app);
+    const pp = await helpers.createPassport(app, token);
+    const startRes = await app.inject({
+      method: 'POST',
+      url: `/v1/passports/${pp}/oauth/mock/start`,
+      headers: helpers.auth(token),
+      payload: { target: 'api.mock.test', label: 'mock creds' },
+    });
+    const { state } = startRes.json();
+
+    // The first /token exchange fails -> 502 oauth_exchange_failed.
+    mock.failNextToken();
+    const cbRes = await app.inject({
+      method: 'GET',
+      url: `/v1/oauth/callback?code=mock-auth-code&state=${encodeURIComponent(state)}`,
+    });
+    expect(cbRes.statusCode).toBe(502);
+    expect(cbRes.json().error.code).toBe('oauth_exchange_failed');
+
+    // The flow row was deleted on failure: replaying the same state is now an
+    // invalid_state 400 (the spent state/code can't be retried).
+    const replay = await app.inject({
+      method: 'GET',
+      url: `/v1/oauth/callback?code=mock-auth-code&state=${encodeURIComponent(state)}`,
+    });
+    expect(replay.statusCode).toBe(400);
+    expect(replay.json().error.code).toBe('invalid_state');
+
+    const { db, schema } = dbmod;
+    const flows = await db.select().from(schema.oauthFlows);
+    expect(flows).toHaveLength(0);
+  });
+
+  it('a non-JSON oauth_token secret yields 500 internal on use (JSON.parse decrypt branch)', async () => {
+    const { token, cbRes } = await captureCredential();
+    const credentialId = cbRes.json().credentialId;
+    const ppList = await app.inject({
+      method: 'GET',
+      url: '/v1/passports',
+      headers: helpers.auth(token),
+    });
+    const pp = ppList.json().items[0].id;
+
+    // Re-seal a non-JSON string under the SAME AAD: it unseals fine but the
+    // oauth_token JSON.parse branch throws -> decrypt_error -> 500 internal.
+    await resealRaw(pp, credentialId, 'api.mock.test', 'this-is-not-json');
+
+    const agent = await helpers.issueAgent(app, token, pp, [
+      'vault:read',
+      'vault:use',
+      'target:api.mock.test',
+    ]);
+    const useRes = await app.inject({
+      method: 'POST',
+      url: `/v1/vault/credentials/${credentialId}/use`,
+      headers: helpers.auth(agent.apiKey),
+    });
+    expect(useRes.statusCode).toBe(500);
+    expect(useRes.json().error.code).toBe('internal');
   });
 });

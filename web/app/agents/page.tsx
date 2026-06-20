@@ -16,6 +16,7 @@ function AgentsView() {
   const [name, setName] = useState('');
   const [scopeRead, setScopeRead] = useState(true);
   const [scopeUse, setScopeUse] = useState(true);
+  const [scopeProxy, setScopeProxy] = useState(false);
   const [targets, setTargets] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -54,6 +55,7 @@ function AgentsView() {
     const scopes: string[] = [];
     if (scopeRead) scopes.push('vault:read');
     if (scopeUse) scopes.push('vault:use');
+    if (scopeProxy) scopes.push('vault:proxy');
     for (const raw of targets.split(',')) {
       const t = raw.trim();
       if (!t) continue;
@@ -217,6 +219,23 @@ function AgentsView() {
                   onChange={(e) => setScopeUse(e.target.checked)}
                 />
                 vault:use
+              </label>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  textTransform: 'none',
+                  marginLeft: 16,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ width: 'auto' }}
+                  checked={scopeProxy}
+                  onChange={(e) => setScopeProxy(e.target.checked)}
+                />
+                vault:proxy
               </label>
             </div>
           </div>

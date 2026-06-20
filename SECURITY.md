@@ -74,6 +74,24 @@ guarantees:
   bounded timeout (`PROXY_TIMEOUT_MS`) and response cap (`PROXY_MAX_RESPONSE_BYTES`)
   bound the call.
 
+## Browser-login mode (secret-bearing plan, confined to the SDK)
+
+`POST /v1/vault/credentials/:id/browser-login` turns a credential into a concrete
+browser-login plan (cookies/header/`localStorage`/form actions) so an agent that
+drives a real browser can authenticate to a web app. Unlike proxy mode, **this
+plan carries secret material** — it is the **same `vault:use` trust level as
+`/use`**, not the never-reaches-agent `vault:proxy` path. The meaningful boundary
+is the **SDK helper** (`browserLogin`): it applies the plan to a `page` object,
+confines the secret to the SDK process's memory, and returns only a non-secret
+summary — the secret is never handed up to the agent's reasoning/LLM layer, and
+the server audits `mode` + `target` only (never the plan or secret). If you need
+the strict "the secret never reaches the agent" guarantee, use **proxy mode**;
+browser-login is the path for web apps that cannot be driven over plain HTTP. The
+non-secret spec lives in the credential's `metadata.browser` (a `password`
+credential requires an explicit `form` spec). This preserves scope separation:
+browser-login requires `vault:use`, so an agent issued only `vault:proxy` cannot
+obtain a secret-bearing plan.
+
 ## Additional controls
 
 - **KMS-backed keys.** With `KEY_PROVIDER=kms`, the master key never enters the
@@ -84,6 +102,9 @@ guarantees:
 - **OAuth tokens.** Captured access **and** refresh tokens are sealed like any
   other credential; refresh happens server-side under an advisory lock and the
   refresh token is never returned to an agent — only the short-lived access token.
+  Proactive refresh requires the provider to return `expires_in` so expiry is
+  known; a provider that omits it is treated as freshness-unknown and is not
+  proactively refreshed.
 - **mTLS identity.** Agents may authenticate with a client certificate (native or
   proxy-terminated); the cert fingerprint maps to the agent, fail-closed.
 - **Anti-abuse.** Argon2id hashing, constant-time login, per-route rate limits,

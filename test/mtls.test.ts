@@ -171,6 +171,14 @@ describe('mTLS binding (issuance)', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('rejects an invalid certPem (not an X.509 cert) with 400 invalid_request', async () => {
+    const { token, agentId } = await setup();
+    const res = await bind(token, agentId, { certPem: 'not-a-cert' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_request');
+    expect(res.json().error.message).toContain('X.509');
+  });
+
   it('binding a fingerprint already bound to another agent returns 409, not 500', async () => {
     const { token, passportId, agentId } = await setup();
     const first = await bind(token, agentId, { fingerprint: HEX64 });

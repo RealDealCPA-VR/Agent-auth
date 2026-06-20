@@ -126,6 +126,57 @@ Same redacted output as above. The Python SDK requires Python 3.9+ and `httpx`
 
 ---
 
+## Browser-login example ([`browser-login.ts`](./browser-login.ts))
+
+Not every login is an API call — some targets are web apps behind a cookie, a
+stored session, or a login form. [`browser-login.ts`](./browser-login.ts) shows an
+agent driving a real **Playwright** browser and authenticating to a target with
+the TS SDK's `browserLogin(page, target)` — **without ever handling the raw secret
+in its own reasoning/tool layer**:
+
+```ts
+import { AgentAuthClient } from '@agentauth/sdk';
+import { chromium } from 'playwright';
+
+const aa = new AgentAuthClient({ baseUrl, apiKey });   // agent key, scope vault:use
+const browser = await chromium.launch();
+const page = await browser.newPage();
+
+// Fetch the browser-login plan, apply it to the page, get back a NON-secret summary.
+const summary = await aa.browserLogin(page, 'app.example.com');
+console.log('logged in via', summary.mode);            // e.g. "cookie" | "form" | "header"
+await page.goto('https://app.example.com/dashboard');  // now authenticated
+```
+
+`browserLogin` fetches the plan from
+`POST /v1/vault/credentials/:id/browser-login`, applies it to the page (sets
+cookies / fills the form / sets an auth header / seeds `localStorage`), and returns
+a **non-secret** summary. The plan **carries secret material** — the same trust
+level as `useCredential` — but `browserLogin` confines it to this process's memory;
+the secret flows only into the browser and never into the return value or a log. If
+you need the strict "secret never reaches the agent" guarantee, use proxy mode
+instead (see the root [README](../README.md)).
+
+Run it (Playwright is **not** bundled by the SDK — add it yourself):
+
+```bash
+cd examples
+pnpm add playwright @agentauth/sdk
+npx playwright install chromium
+export AGENTAUTH_API_KEY=aa_<uuid>.<secret>   # scope vault:use
+export TARGET=app.example.com
+pnpm tsx browser-login.ts
+```
+
+Requirements: the agent key has `vault:use`, a credential exists for `TARGET`, and
+— for a **`password`** credential — that credential has a `metadata.browser` form
+spec (set at deposit time / in the admin UI). `cookie`, `api_key`, and
+`oauth_token` credentials get a sensible default plan with no spec. A missing or
+invalid spec returns `422 no_browser_spec`. The same SDK methods exist in Python
+(`browser_login` / `get_browser_login_plan`) and as the MCP `browser_login` tool.
+
+---
+
 ## Notes
 
 - **Secrets are never printed in full.** Both examples redact to `length + 4-char
