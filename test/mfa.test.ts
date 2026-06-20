@@ -265,6 +265,32 @@ describe('MFA approval-queue handoff', () => {
     expect(got.json().code).toBe('424242');
   });
 
+  it('a delegate removed from the credential metadata can no longer approve (authz re-checked)', async () => {
+    const { token: ownerToken } = await registerAndLogin(app);
+    const passportId = await createPassport(app, ownerToken);
+    const delegate = await registerAndLogin(app);
+    const agent = await issueAgent(app, ownerToken, passportId, ['vault:use', 'target:app.example.com'], 'mfa-bot');
+    const cred = await deposit(app, ownerToken, passportId, {
+      target: 'app.example.com',
+      label: 'login',
+      type: 'password',
+      secret: 'pw',
+      metadata: { delegateApproverId: delegate.id, browser: { mode: 'cookie' } },
+    });
+    const requestId = (await reqMfa(agent.apiKey, cred.id, { challengeId: 'gx', kind: 'totp' })).json().requestId;
+
+    // Owner revokes the delegation by clearing it from the credential metadata.
+    await db
+      .update(schema.credentials)
+      .set({ metadata: { browser: { mode: 'cookie' } } })
+      .where(eq(schema.credentials.id, cred.id));
+
+    // The ex-delegate's approval is now refused (existence hidden as 404), and the
+    // agent never receives a code — the authorization is re-evaluated, not cached.
+    expect((await approveMfa(delegate.token, requestId, '424242')).statusCode).toBe(404);
+    expect((await pollMfa(agent.apiKey, cred.id, requestId)).json().status).toBe('pending');
+  });
+
   it('rate-limits pending MFA requests per credential+agent', async () => {
     const s = await setup();
     for (let i = 0; i < MFA_MAX_PENDING; i += 1) {

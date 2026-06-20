@@ -82,6 +82,10 @@ export async function buildServer(): Promise<FastifyInstance> {
           'res.body.headers',
           'res.body.items',
           'res.body.actions[*].value',
+          // The MFA poll (GET .../mfa/request/:id) returns the one-time code in its
+          // body on approval; cover it to the same standard, should response-body
+          // logging ever be enabled.
+          'res.body.code',
         ],
         censor: '[redacted]',
       },

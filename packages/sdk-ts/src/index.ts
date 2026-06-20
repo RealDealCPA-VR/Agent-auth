@@ -298,6 +298,10 @@ export interface MfaChallenge {
   inputSelector?: string;
   /** Submit selector from the credential's `metadata.browser.mfa` (if set). */
   submitSelector?: string;
+  /** Navigation allowlist carried from the login plan, so {@link AgentAuthClient.resolveMfa}
+   * can re-vet the current host before typing the one-time code (the page can drift
+   * off-list during the human-approval wait). Absent/empty = allow all. */
+  allowedDomains?: string[];
 }
 
 /** Options for {@link AgentAuthClient.resolveMfa}. */
@@ -314,6 +318,10 @@ export interface ResolveMfaOptions {
   pollIntervalMs?: number;
   /** Injectable delay (tests pass a no-op); defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
+  /** Navigation allowlist to re-vet the current host against before typing the
+   * one-time code. Defaults to the challenge's `allowedDomains` (carried from the
+   * login plan). Absent/empty = allow all. */
+  allowedDomains?: string[];
 }
 
 /**
@@ -720,16 +728,24 @@ function assertNavAllowed(url: string, allow: string[] | undefined): void {
   }
 }
 
+/** True if the page's CURRENT host is permitted by `allow`. A blank/empty location
+ * (no navigation yet) is not a leak target, so it counts as allowed; an absent/empty
+ * list allows all. Non-throwing companion to {@link assertCurrentHostAllowed}. */
+function hostOnAllowlist(page: BrowserPage, allow: string[] | undefined): boolean {
+  if (!allow || allow.length === 0) return true;
+  const current = page.url?.();
+  const host = typeof current === 'string' ? urlHost(current) : '';
+  return !host || hostAllowed(host, allow);
+}
+
 /** Throw if the page's CURRENT host is off the allowlist before an action that
  * carries (or submits) the secret. The goto guard only vets explicit navigations;
  * a `click` (or the page itself) can redirect to an off-list host, after which a
- * later `fill` would type the secret there. A blank/empty location (no navigation
- * yet) is not a leak target, so it's skipped — only a real off-list host fails. */
+ * later `fill` (form password OR injected MFA code) would type the secret there.
+ * A blank/empty location (no navigation yet) is not a leak target, so it's skipped. */
 function assertCurrentHostAllowed(page: BrowserPage, allow: string[] | undefined): void {
-  if (!allow || allow.length === 0) return;
-  const current = page.url?.();
-  const host = typeof current === 'string' ? urlHost(current) : '';
-  if (host && !hostAllowed(host, allow)) {
+  if (!hostOnAllowlist(page, allow)) {
+    const host = urlHost((page.url?.() as string) ?? '');
     throw new TypeError(`AgentAuth SDK: current page host ${host} is not in allowedDomains`);
   }
 }
@@ -787,6 +803,7 @@ async function detectMfaChallenge(
   page: BrowserPage,
   currentUrl: string,
   spec: MfaSpec | undefined,
+  allow: string[] | undefined,
 ): Promise<MfaChallenge | undefined> {
   const html = (await page.content?.()) ?? '';
   const urlHit = MFA_URL_RE.test(currentUrl);
@@ -796,17 +813,25 @@ async function detectMfaChallenge(
   const detected =
     by === 'url' ? urlHit : by === 'text' ? textHit : by === 'input' ? inputHit : urlHit || textHit || inputHit;
   if (!detected) return undefined;
+  // Only scrape page text into promptText when the page is still on an allowlisted
+  // host: a submit click could have redirected us off-list, and that off-list HTML
+  // would otherwise be forwarded to the server and shown to the human approver.
+  const onList = hostOnAllowlist(page, allow);
+  const scraped = onList ? extractPromptText(html) : undefined;
   return {
     kind: spec?.kind ?? 'otp',
     // Truthy fallback (matches the Python SDK): an empty-string channelHint falls
     // through to the extracted page text rather than becoming a blank prompt.
-    promptText: spec?.channelHint || extractPromptText(html) || 'Multi-factor authentication required',
+    promptText: spec?.channelHint || scraped || 'Multi-factor authentication required',
     detectedAt: new Date().toISOString(),
     challengeId: genChallengeId(),
     // Carry the configured selectors forward so resolveMfa can inject the code
     // without an explicit option (the per-credential spec drives it).
     ...(spec?.inputSelector !== undefined ? { inputSelector: spec.inputSelector } : {}),
     ...(spec?.submitSelector !== undefined ? { submitSelector: spec.submitSelector } : {}),
+    // Carry the allowlist forward so resolveMfa can re-vet the host before it types
+    // the one-time code (the page may drift off-list during the human-approval wait).
+    ...(allow && allow.length > 0 ? { allowedDomains: allow } : {}),
   };
 }
 
@@ -960,7 +985,7 @@ export async function applyBrowserLogin(
       if (submitted === true) {
         authenticated = true;
       } else {
-        mfa = await detectMfaChallenge(page, current ?? '', plan.mfa);
+        mfa = await detectMfaChallenge(page, current ?? '', plan.mfa, plan.allowedDomains);
         if (mfa) authenticated = false;
         // No success-URL configured and no MFA seen → best-effort success (the form
         // was submitted and no challenge appeared). With a success-URL configured
@@ -1261,6 +1286,11 @@ export class AgentAuthClient extends Transport {
             // consumed but not applied (rather than a silent false success).
             return { resolved: false, status: 'approved', by: res.by ?? null, at: res.at ?? null };
           }
+          // Re-vet the CURRENT host before typing the one-time code: the browser was
+          // left on the challenge page during the (up to 5-min) human-approval wait
+          // and could have drifted off-list via a redirect. Fail closed — mirror the
+          // form-fill guard so the OTP gets the same host-pinning the password does.
+          assertCurrentHostAllowed(page, opts.allowedDomains ?? challenge.allowedDomains);
           let filled = false;
           if (page.fill) {
             await page.fill(inputSelector, res.code);

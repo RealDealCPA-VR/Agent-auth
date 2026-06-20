@@ -1268,6 +1268,43 @@ def test_header_mode_enforces_allowed_domains():
     assert ("goto", "https://evil.example.org/") not in page.calls
 
 
+def test_resolve_mfa_refuses_off_list_code_injection():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "approved", "code": "123456", "by": "o@e.com", "at": "t"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    page.goto("https://evil.example.org/landing")  # browser drifted off-list
+    challenge = {**_MFA_CHALLENGE, "allowedDomains": ["app.example.com"]}
+    with pytest.raises(ValueError, match="allowedDomains"):
+        client.resolve_mfa(page, cid, challenge, input_selector="#otp", sleep=lambda *_: None)
+    assert not any(c[0] == "fill" for c in page.calls)  # OTP never typed off-list
+
+
+def test_detect_mfa_does_not_scrape_off_list_page_text():
+    cid = "11111111-1111-4111-8111-111111111111"
+    plan = {"mode": "form", "target": "app.example.com", "url": "https://app.example.com/login",
+            "actions": [
+                {"type": "goto", "url": "https://app.example.com/login"},  # on-list
+                {"type": "click", "selector": "#go"},                       # redirects off-list
+            ],
+            "allowedDomains": ["app.example.com"]}
+    page = FakePage()
+    page.post_submit_url = "https://evil.example.org/landing"
+    page.html = "<h1>Verification code</h1><p>PHISH-TEXT enter the one-time code</p>"
+    client = _make_plan_client(plan)
+    summary = client.browser_login(page, cid)
+    assert "mfa" in summary
+    # Off-list HTML must NOT be scraped into promptText; fall back to the static string.
+    assert summary["mfa"]["promptText"] == "Multi-factor authentication required"
+    assert "PHISH-TEXT" not in summary["mfa"]["promptText"]
+    assert summary["mfa"]["allowedDomains"] == ["app.example.com"]
+
+
 def test_resolve_mfa_revoked_forces_logout():
     cid = "11111111-1111-4111-8111-111111111111"
 

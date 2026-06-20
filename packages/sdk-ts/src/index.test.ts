@@ -1206,6 +1206,21 @@ describe('AgentAuthClient.resolveMfa', () => {
     expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
   });
 
+  it('refuses to inject the approved code when the page has drifted off the allowlist', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { body: { status: 'approved', code: '123456', by: 'o@e.com', at: 't' } },
+    ]);
+    // The browser is sitting on an off-allowlist host when approval lands.
+    const { page, events } = makeFakePage({ currentUrl: 'https://evil.example.org/landing' });
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const ch: MfaChallenge = { ...challenge, allowedDomains: ['app.example.com'] };
+    await expect(aa.resolveMfa(page, PLAN_UUID, ch, { inputSelector: '#otp', sleep: noSleep })).rejects.toThrow(
+      /allowedDomains/,
+    );
+    expect(events.some((e) => e.kind === 'fill')).toBe(false); // OTP never typed off-list
+  });
+
   it('force-logs-out when a poll returns status revoked (session must not outlive a revoked agent)', async () => {
     stubFetch([{ body: { requestId: 'r', status: 'pending' } }, { body: { status: 'revoked' } }]);
     const { page, events } = makeFakePage();
@@ -1333,6 +1348,29 @@ describe('browser hardening (Phase 4)', () => {
       allowedDomains: ['app.example.com'],
     };
     await expect(applyBrowserLogin(makeFakePage().page, lsPlan)).rejects.toThrow(/allowedDomains/);
+  });
+
+  it('form mode: does not scrape off-list page text into promptText after a redirect', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'app.example.com',
+      url: 'https://app.example.com/login',
+      actions: [
+        { type: 'goto', url: 'https://app.example.com/login' }, // on-list
+        { type: 'click', selector: '#go' }, // redirects off-list (no fill follows)
+      ],
+      allowedDomains: ['app.example.com'],
+    };
+    // The off-list page tries to inject attacker text into the approval prompt.
+    const html = '<h1>Verification code</h1><p>PHISH-TEXT enter the one-time code</p>';
+    const { page } = makeFakePage({ postSubmitUrl: 'https://evil.example.org/landing', html });
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.mfa).toBeDefined();
+    // Off-list HTML must NOT be scraped into promptText; fall back to the static string.
+    expect(summary.mfa?.promptText).toBe('Multi-factor authentication required');
+    expect(summary.mfa?.promptText).not.toContain('PHISH-TEXT');
+    // The allowlist is carried onto the challenge so resolveMfa can re-vet the host.
+    expect(summary.mfa?.allowedDomains).toEqual(['app.example.com']);
   });
 
   it('form mode: refuses to fill the secret after a click redirects to an off-list host', async () => {

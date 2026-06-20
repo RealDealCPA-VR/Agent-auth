@@ -664,6 +664,7 @@ class AgentAuthClient(_BaseClient):
         poll_interval_s: float = 2.0,
         sleep: Any = None,
         limit: int = 200,
+        allowed_domains: Any = None,
     ) -> Dict[str, Any]:
         """Resolve a detected MFA ``challenge`` via the human approval queue.
 
@@ -674,6 +675,10 @@ class AgentAuthClient(_BaseClient):
         ``{"resolved": bool, "status": "approved"|"denied"|"revoked"|"expired"|"timeout", "by"?, "at"?}``.
         """
         import time
+
+        # Lazy import (mirrors browser.py's duck-typed import policy): used to re-vet
+        # the page host before the one-time code is typed in.
+        from .browser import _assert_current_host_allowed
 
         sleeper = sleep or time.sleep
         cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
@@ -730,6 +735,13 @@ class AgentAuthClient(_BaseClient):
                         # NOT advanced. Report not-resolved (code consumed, unapplied).
                         return {"resolved": False, "status": "approved",
                                 "by": res.get("by"), "at": res.get("at")}
+                    # Re-vet the CURRENT host before typing the one-time code: the
+                    # browser sat on the challenge page during the human-approval wait
+                    # and could have drifted off-list via a redirect. Fail closed —
+                    # mirror the form-fill guard so the OTP is host-pinned like the pw.
+                    _assert_current_host_allowed(
+                        page, allowed_domains if allowed_domains else challenge.get("allowedDomains")
+                    )
                     page.fill(in_sel, code)
                     if sub_sel:
                         page.click(sub_sel)

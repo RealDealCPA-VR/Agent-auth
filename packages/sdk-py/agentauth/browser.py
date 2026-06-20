@@ -52,17 +52,28 @@ def _assert_nav_allowed(url: str, allow: Any) -> None:
         raise ValueError(f"navigation to {_url_host(url)} is not in allowedDomains")
 
 
-def _assert_current_host_allowed(page: Any, allow: Any) -> None:
-    """Refuse a secret-bearing action (fill) or submit (click) when the page's
-    CURRENT host is off the allowlist. The goto guard only vets explicit
-    navigations; a click/redirect can drift us off-list, after which a later fill
-    would type the secret there. A blank/empty location (no navigation yet) is not
-    a leak target, so it's skipped — only a real off-list host fails."""
+def _host_on_allowlist(page: Any, allow: Any) -> bool:
+    """True if the page's CURRENT host is permitted by ``allow``. A blank/empty
+    location (no navigation yet) is not a leak target, so it counts as allowed; an
+    absent/empty list allows all. Non-raising companion to
+    ``_assert_current_host_allowed``."""
     if not allow:
-        return
+        return True
     current = _page_url(page)
     host = _url_host(current) if isinstance(current, str) else ""
-    if host and not _host_allowed(host, allow):
+    return (not host) or _host_allowed(host, allow)
+
+
+def _assert_current_host_allowed(page: Any, allow: Any) -> None:
+    """Refuse a secret-bearing action (fill of the form password OR the injected MFA
+    code) or submit (click) when the page's CURRENT host is off the allowlist. The
+    goto guard only vets explicit navigations; a click/redirect can drift us off-list,
+    after which a later fill would type the secret there. A blank/empty location (no
+    navigation yet) is not a leak target, so it's skipped — only a real off-list host
+    fails."""
+    if not _host_on_allowlist(page, allow):
+        current = _page_url(page)
+        host = _url_host(current) if isinstance(current, str) else ""
         raise ValueError(f"current page host {host} is not in allowedDomains")
 
 # The JS evaluated in the page to set localStorage items. Kept as a module
@@ -202,7 +213,9 @@ def _extract_prompt_text(html: str) -> Optional[str]:
     return _scrub_prompt_text(m.group(0).strip()[:160])
 
 
-def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+def _detect_mfa(
+    page: Any, spec: Optional[Mapping[str, Any]], allow: Any = None
+) -> Optional[Dict[str, Any]]:
     """Detect an MFA challenge after a form submit using non-secret page signals.
 
     Returns a non-secret challenge dict ``{kind, promptText, detectedAt,
@@ -227,10 +240,14 @@ def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[s
         detected = url_hit or text_hit or input_hit
     if not detected:
         return None
+    # Only scrape page text into promptText when the page is still on an allowlisted
+    # host: a submit click could have redirected us off-list, and that off-list HTML
+    # would otherwise be forwarded to the server and shown to the human approver.
+    scraped = _extract_prompt_text(html) if _host_on_allowlist(page, allow) else None
     challenge: Dict[str, Any] = {
         "kind": spec.get("kind", "otp"),
         "promptText": spec.get("channelHint")
-        or _extract_prompt_text(html)
+        or scraped
         or "Multi-factor authentication required",
         "detectedAt": datetime.now(timezone.utc).isoformat(),
         "challengeId": "mfa_" + uuid.uuid4().hex,
@@ -241,6 +258,10 @@ def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[s
         challenge["inputSelector"] = spec["inputSelector"]
     if spec.get("submitSelector") is not None:
         challenge["submitSelector"] = spec["submitSelector"]
+    # Carry the allowlist forward so resolve_mfa can re-vet the host before typing the
+    # one-time code (the page can drift off-list during the human-approval wait).
+    if allow:
+        challenge["allowedDomains"] = allow
     return challenge
 
 
@@ -290,7 +311,7 @@ def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     if submitted is True:
         summary["authenticated"] = True
     else:
-        mfa = _detect_mfa(page, plan.get("mfa"))
+        mfa = _detect_mfa(page, plan.get("mfa"), allow)
         if mfa is not None:
             summary["authenticated"] = False
             summary["mfa"] = mfa

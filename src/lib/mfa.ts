@@ -343,6 +343,18 @@ async function mayApprove(
   return typeof delegate === 'string' && delegate === principalId;
 }
 
+/** SQL predicate matching rows `principalId` may decide: the passport owner, or the
+ * credential's current `metadata.delegateApproverId`. Folded into the approve/deny
+ * UPDATE guards so the authorization is re-evaluated ATOMICALLY with the mutation —
+ * a delegate revoked between the pre-read and the UPDATE cannot win the guarded
+ * write (closing the TOCTOU on the mutable delegate field, mirroring the TTL guard). */
+function mayDecidePredicate(principalId: string) {
+  return or(
+    eq(schema.mfaRequests.principalId, principalId),
+    sql`${schema.mfaRequests.credentialId} IN (SELECT id FROM credentials WHERE metadata->>'delegateApproverId' = ${principalId})`,
+  );
+}
+
 export type DecideMfaResult =
   | { ok: true; row: typeof schema.mfaRequests.$inferSelect }
   | { ok: false; reason: 'not_found' | 'forbidden' | 'not_pending' | 'code_required' | 'seal_failed' };
@@ -400,13 +412,15 @@ export async function approveMfaRequest(
     const [updated] = await tx
       .update(schema.mfaRequests)
       .set({ status: 'approved', sealedCode, decidedAt: new Date(), decidedBy: principalId })
-      // Re-check the TTL in the guard so a row that expired during the (possibly
-      // slow KMS-backed) seal can't be flipped to 'approved' — no stale approval.
+      // Re-check the TTL AND the approver eligibility in the guard so a row that
+      // expired, or whose delegate was revoked, during the (possibly slow KMS-backed)
+      // seal can't be flipped to 'approved' — no stale approval, no revoked-delegate win.
       .where(
         and(
           eq(schema.mfaRequests.id, row.id),
           eq(schema.mfaRequests.status, 'pending'),
           gt(schema.mfaRequests.expiresAt, new Date()),
+          mayDecidePredicate(principalId),
         ),
       )
       .returning();
@@ -452,13 +466,15 @@ export async function denyMfaRequest(
     const [updated] = await tx
       .update(schema.mfaRequests)
       .set({ status: 'denied', decidedAt: new Date(), decidedBy: principalId })
-      // Re-check TTL in the guard too, so a row that lapses between the pre-read
-      // and the UPDATE is not flipped to 'denied' after it should have expired.
+      // Re-check TTL AND approver eligibility in the guard too, so a row that lapses
+      // or whose delegate is revoked between the pre-read and the UPDATE is not flipped
+      // to 'denied' by a no-longer-eligible principal.
       .where(
         and(
           eq(schema.mfaRequests.id, row.id),
           eq(schema.mfaRequests.status, 'pending'),
           gt(schema.mfaRequests.expiresAt, new Date()),
+          mayDecidePredicate(principalId),
         ),
       )
       .returning();
@@ -489,10 +505,7 @@ export async function listPendingMfaFor(
   const where = and(
     eq(schema.mfaRequests.status, 'pending'),
     gt(schema.mfaRequests.expiresAt, new Date()),
-    or(
-      eq(schema.mfaRequests.principalId, principalId),
-      sql`${schema.mfaRequests.credentialId} IN (SELECT id FROM credentials WHERE metadata->>'delegateApproverId' = ${principalId})`,
-    ),
+    mayDecidePredicate(principalId),
   );
   const items = await db
     .select()
