@@ -720,6 +720,20 @@ function assertNavAllowed(url: string, allow: string[] | undefined): void {
   }
 }
 
+/** Throw if the page's CURRENT host is off the allowlist before an action that
+ * carries (or submits) the secret. The goto guard only vets explicit navigations;
+ * a `click` (or the page itself) can redirect to an off-list host, after which a
+ * later `fill` would type the secret there. A blank/empty location (no navigation
+ * yet) is not a leak target, so it's skipped — only a real off-list host fails. */
+function assertCurrentHostAllowed(page: BrowserPage, allow: string[] | undefined): void {
+  if (!allow || allow.length === 0) return;
+  const current = page.url?.();
+  const host = typeof current === 'string' ? urlHost(current) : '';
+  if (host && !hostAllowed(host, allow)) {
+    throw new TypeError(`AgentAuth SDK: current page host ${host} is not in allowedDomains`);
+  }
+}
+
 /** True if `host` matches one of `allowed` (exact, `*` wildcard, or `*.suffix`). */
 function hostAllowed(host: string, allowed: string[]): boolean {
   return allowed.some((raw) => {
@@ -899,6 +913,9 @@ export async function applyBrowserLogin(
             await page.goto(action.url);
             break;
           case 'fill':
+            // Re-vet the CURRENT host before typing the secret: a prior click/redirect
+            // could have steered us off-list since the last goto check.
+            assertCurrentHostAllowed(page, allow);
             if (page.fill) await page.fill(action.selector, action.value);
             else if (page.type) await page.type(action.selector, action.value);
             else
@@ -908,6 +925,8 @@ export async function applyBrowserLogin(
             filledFields += 1;
             break;
           case 'click':
+            // A click can submit the filled secret; refuse if we've drifted off-list.
+            assertCurrentHostAllowed(page, allow);
             await page.click(action.selector);
             break;
           default:

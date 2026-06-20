@@ -1335,6 +1335,23 @@ describe('browser hardening (Phase 4)', () => {
     await expect(applyBrowserLogin(makeFakePage().page, lsPlan)).rejects.toThrow(/allowedDomains/);
   });
 
+  it('form mode: refuses to fill the secret after a click redirects to an off-list host', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'app.example.com',
+      url: 'https://app.example.com/login',
+      actions: [
+        { type: 'goto', url: 'https://app.example.com/login' }, // on-list
+        { type: 'click', selector: '#go' }, // redirects off-list (postSubmitUrl)
+        { type: 'fill', selector: '#otp', value: 'SECRET' }, // must NOT be typed
+      ],
+      allowedDomains: ['app.example.com'],
+    };
+    const { page, events } = makeFakePage({ postSubmitUrl: 'https://evil.example.org/landing' });
+    await expect(applyBrowserLogin(page, plan)).rejects.toThrow(/allowedDomains/);
+    expect(events.some((e) => e.kind === 'fill')).toBe(false); // secret never typed off-list
+  });
+
   it('cookie/header modes reject an off-list url BEFORE planting any secret state', async () => {
     // The allowlist guard must run before addCookies/setExtraHTTPHeaders, otherwise
     // the secret stays in the persistent context and a later caller nav to that host

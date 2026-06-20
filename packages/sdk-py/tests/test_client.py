@@ -1212,6 +1212,23 @@ def test_form_allows_subdomain_within_allowed_domains():
     assert summary["authenticated"] is True
 
 
+def test_form_refuses_fill_after_click_redirects_off_list():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "form", "target": "app.example.com", "url": "https://app.example.com/login",
+            "actions": [
+                {"type": "goto", "url": "https://app.example.com/login"},  # on-list
+                {"type": "click", "selector": "#go"},                       # redirects off-list
+                {"type": "fill", "selector": "#otp", "value": "SECRET"},    # must NOT be typed
+            ],
+            "allowedDomains": ["app.example.com"]}
+    page = FakePage()
+    page.post_submit_url = "https://evil.example.org/landing"
+    with pytest.raises(ValueError, match="allowedDomains"):
+        apply_browser_login(page, plan)
+    assert ("fill", "#otp", "SECRET") not in page.calls  # secret never typed off-list
+
+
 def test_cookie_mode_enforces_allowed_domains():
     from agentauth.browser import apply_browser_login
 

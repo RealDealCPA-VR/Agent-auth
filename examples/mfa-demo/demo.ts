@@ -80,8 +80,10 @@ async function main(): Promise<void> {
   // --- Human (one-time setup): deposit the credential + issue the agent. -------
   const email = `mfa-demo+${Date.now()}@example.com`;
   await HumanClient.register(API, email, PASSWORD);
-  const human = await HumanClient.login(API, email, PASSWORD);
-  const session = await HumanClient.loginRaw(API, email, PASSWORD); // raw token for the approver
+  // One login serves both roles: build the client from the raw session token and
+  // reuse that same token for the approver simulation (no redundant second login).
+  const session = await HumanClient.loginRaw(API, email, PASSWORD);
+  const human = new HumanClient({ baseUrl: API, token: session.token });
   const passport = await human.createPassport('demo');
   await human.depositCredential(passport.id, {
     target: TARGET,

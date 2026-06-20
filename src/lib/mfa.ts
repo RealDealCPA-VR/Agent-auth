@@ -71,6 +71,17 @@ export async function createMfaRequest(args: {
     .limit(1);
   if (!p) return { ok: false, reason: 'not_found' };
 
+  // Independently verify the credential actually belongs to this passport rather than
+  // trusting the caller to have scoped it (the route does, but self-scope here so a
+  // future caller can't mint an MFA row referencing another passport's credential).
+  // Mirrors fetchMfaCode/mayApprove, which already self-scope.
+  const [cred] = await db
+    .select({ id: schema.credentials.id })
+    .from(schema.credentials)
+    .where(and(eq(schema.credentials.id, args.credentialId), eq(schema.credentials.passportId, args.passportId)))
+    .limit(1);
+  if (!cred) return { ok: false, reason: 'not_found' };
+
   const scope = and(
     eq(schema.mfaRequests.agentId, args.agentId),
     eq(schema.mfaRequests.credentialId, args.credentialId),

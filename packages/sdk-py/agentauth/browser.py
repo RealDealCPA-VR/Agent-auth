@@ -51,6 +51,20 @@ def _assert_nav_allowed(url: str, allow: Any) -> None:
     if allow and not _host_allowed(_url_host(url), allow):
         raise ValueError(f"navigation to {_url_host(url)} is not in allowedDomains")
 
+
+def _assert_current_host_allowed(page: Any, allow: Any) -> None:
+    """Refuse a secret-bearing action (fill) or submit (click) when the page's
+    CURRENT host is off the allowlist. The goto guard only vets explicit
+    navigations; a click/redirect can drift us off-list, after which a later fill
+    would type the secret there. A blank/empty location (no navigation yet) is not
+    a leak target, so it's skipped — only a real off-list host fails."""
+    if not allow:
+        return
+    current = _page_url(page)
+    host = _url_host(current) if isinstance(current, str) else ""
+    if host and not _host_allowed(host, allow):
+        raise ValueError(f"current page host {host} is not in allowedDomains")
+
 # The JS evaluated in the page to set localStorage items. Kept as a module
 # constant so tests can assert it is passed through unchanged.
 _LOCAL_STORAGE_JS = (
@@ -241,10 +255,15 @@ def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
             _assert_nav_allowed(action["url"], allow)
             page.goto(action["url"])
         elif kind == "fill":
+            # Re-vet the CURRENT host before typing the secret: a prior click/redirect
+            # could have steered us off-list since the last goto check.
+            _assert_current_host_allowed(page, allow)
             page.fill(action["selector"], action["value"])
             # Count only — never the filled value (matches the TS summary contract).
             filled_fields += 1
         elif kind == "click":
+            # A click can submit the filled secret; refuse if we've drifted off-list.
+            _assert_current_host_allowed(page, allow)
             page.click(action["selector"])
         else:
             raise ValueError(f"unknown form action type: {kind!r}")

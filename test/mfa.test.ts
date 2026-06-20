@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db/index.js';
-import { MFA_MAX_PENDING } from '../src/lib/mfa.js';
+import { MFA_MAX_PENDING, createMfaRequest } from '../src/lib/mfa.js';
 import {
   makeApp,
   resetDb,
@@ -218,6 +218,24 @@ describe('MFA approval-queue handoff', () => {
       .limit(1);
     expect(row!.status).toBe('expired');
     expect(row!.sealed).toBeNull(); // a one-time code that can no longer be delivered is destroyed
+  });
+
+  it('createMfaRequest refuses a credential that does not belong to the passport (self-scope DiD)', async () => {
+    const s = await setup();
+    // A second principal + passport; the credential s.credId belongs to s.passportId.
+    const other = await registerAndLogin(app);
+    const otherPassportId = await createPassport(app, other.token);
+    // Forge a (foreign-passport, this-credential) pairing. The vault route blocks this
+    // via getCredentialMeta scoping, but createMfaRequest must self-scope and reject too.
+    const res = await createMfaRequest({
+      passportId: otherPassportId,
+      credentialId: s.credId,
+      agentId: s.agentId,
+      challengeId: 'forge',
+      kind: 'totp',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe('not_found');
   });
 
   it('a stranger cannot approve another owner\'s MFA request (404)', async () => {
