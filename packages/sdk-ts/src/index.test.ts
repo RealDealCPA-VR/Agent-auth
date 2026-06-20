@@ -7,6 +7,7 @@ import {
   applyBrowserLogin,
   type BrowserLoginPlan,
   type BrowserPage,
+  type MfaChallenge,
   type Page,
   type PlanCookie,
   type UsedCredential,
@@ -889,6 +890,10 @@ function makeFakePage(
           events.push({ kind: 'ctxSetHeaders', arg: headers });
           return Promise.resolve(null);
         },
+        clearCookies: () => {
+          events.push({ kind: 'clearCookies', arg: null });
+          return Promise.resolve(null);
+        },
       }) as ReturnType<NonNullable<BrowserPage['context']>>;
     page.fill = (selector: string, value: string) => {
       events.push({ kind: 'fill', arg: { selector, value } });
@@ -1112,5 +1117,105 @@ describe('applyBrowserLogin / browserLogin', () => {
     expect(summary.authenticated).toBe(true);
     expect(summary.mfa).toBeUndefined();
     expect(summary.submitted).toBe(true);
+  });
+});
+
+describe('AgentAuthClient.resolveMfa', () => {
+  const challenge: MfaChallenge = {
+    kind: 'totp',
+    promptText: 'enter the code',
+    detectedAt: '2026-01-01T00:00:00Z',
+    challengeId: 'ch1',
+  };
+  const noSleep = () => Promise.resolve();
+
+  it('opens a request, polls, injects the approved code into the DOM, returns a non-secret resolution', async () => {
+    const { calls } = stubFetch([
+      { body: { requestId: 'req-1', status: 'pending' } }, // POST /mfa/request
+      { body: { status: 'pending' } }, // GET poll 1
+      { body: { status: 'approved', code: '123456', by: 'owner@example.com', at: '2026-01-01T00:01:00Z' } },
+    ]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, {
+      inputSelector: '#otp',
+      submitSelector: '#verify',
+      sleep: noSleep,
+    });
+
+    expect(res.resolved).toBe(true);
+    expect(res.status).toBe('approved');
+    expect(res.by).toBe('owner@example.com');
+    // The code went into the DOM (fill) but NOT into the resolution.
+    const fill = events.find((e) => e.kind === 'fill');
+    expect((fill?.arg as { selector: string }).selector).toBe('#otp');
+    expect(events.some((e) => e.kind === 'click')).toBe(true);
+    assertNoSecret(res, ['123456']);
+    // POST /mfa/request first, then GET polls.
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.url).toContain(`/v1/vault/credentials/${PLAN_UUID}/mfa/request`);
+    expect(calls[1]?.url).toContain('/mfa/request/req-1');
+  });
+
+  it('returns denied without injecting anything', async () => {
+    stubFetch([{ body: { requestId: 'r', status: 'pending' } }, { body: { status: 'denied' } }]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, { inputSelector: '#otp', sleep: noSleep });
+    expect(res.resolved).toBe(false);
+    expect(res.status).toBe('denied');
+    expect(events.find((e) => e.kind === 'fill')).toBeUndefined();
+  });
+
+  it('maps a 410 poll (expired/consumed) to expired', async () => {
+    stubFetch([
+      { body: { requestId: 'r', status: 'pending' } },
+      { status: 410, body: { error: { code: 'expired', message: 'gone' } } },
+    ]);
+    const { page } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    const res = await aa.resolveMfa(page, PLAN_UUID, challenge, { inputSelector: '#otp', sleep: noSleep });
+    expect(res.resolved).toBe(false);
+    expect(res.status).toBe('expired');
+  });
+});
+
+describe('browser hardening (Phase 4)', () => {
+  it('form mode: refuses navigation to a host outside allowedDomains', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'app.example.com',
+      url: 'https://app.example.com/login',
+      actions: [{ type: 'goto', url: 'https://evil.example.org/login' }],
+      allowedDomains: ['app.example.com'],
+    };
+    const { page } = makeFakePage();
+    await expect(applyBrowserLogin(page, plan)).rejects.toThrow(/allowedDomains/);
+  });
+
+  it('form mode: allows a subdomain within allowedDomains (*.example.com)', async () => {
+    const plan: BrowserLoginPlan = {
+      mode: 'form',
+      target: 'example.com',
+      url: 'https://app.example.com/login',
+      actions: [
+        { type: 'goto', url: 'https://app.example.com/login' },
+        { type: 'fill', selector: '#p', value: 'SECRET' },
+      ],
+      allowedDomains: ['*.example.com'],
+    };
+    const { page } = makeFakePage();
+    const summary = await applyBrowserLogin(page, plan);
+    expect(summary.filledFields).toBe(1);
+    expect(summary.authenticated).toBe(true);
+  });
+
+  it('browserLogin force-logs-out the browser when the agent is revoked (401)', async () => {
+    stubFetch([{ status: 401, body: { error: { code: 'unauthorized', message: 'revoked' } } }]);
+    const { page, events } = makeFakePage();
+    const aa = new AgentAuthClient({ baseUrl: BASE, apiKey: API_KEY });
+    await expect(aa.browserLogin(page, PLAN_UUID)).rejects.toMatchObject({ status: 401 });
+    expect(events.some((e) => e.kind === 'clearCookies')).toBe(true);
+    expect(events.some((e) => e.kind === 'goto' && e.arg === 'about:blank')).toBe(true);
   });
 });

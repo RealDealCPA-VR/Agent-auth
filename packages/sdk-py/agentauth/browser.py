@@ -21,6 +21,28 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional
+from urllib.parse import urlparse
+
+
+def _url_host(u: str) -> str:
+    try:
+        return (urlparse(u).hostname or "").lower().rstrip(".")
+    except Exception:  # noqa: BLE001 - any parse failure -> empty host
+        return ""
+
+
+def _host_allowed(host: str, allowed: List[str]) -> bool:
+    for raw in allowed:
+        p = raw.strip().lower()
+        if p == "*":
+            return True
+        if p.startswith("*."):
+            suffix = p[2:]
+            if host == suffix or host.endswith("." + suffix):
+                return True
+        elif host == p:
+            return True
+    return False
 
 # The JS evaluated in the page to set localStorage items. Kept as a module
 # constant so tests can assert it is passed through unchanged.
@@ -177,10 +199,16 @@ def _detect_mfa(page: Any, spec: Optional[Mapping[str, Any]]) -> Optional[Dict[s
 
 def _apply_form(page: Any, plan: Mapping[str, Any]) -> Dict[str, Any]:
     actions: List[Mapping[str, Any]] = list(plan.get("actions") or [])
+    allow = plan.get("allowedDomains")
     filled_fields = 0
     for action in actions:
         kind = action.get("type")
         if kind == "goto":
+            # Navigation allowlist (browser analogue of proxy host-pinning).
+            if allow and not _host_allowed(_url_host(action["url"]), allow):
+                raise ValueError(
+                    f"navigation to {_url_host(action['url'])} is not in allowedDomains"
+                )
             page.goto(action["url"])
         elif kind == "fill":
             page.fill(action["selector"], action["value"])

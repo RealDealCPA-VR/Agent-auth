@@ -201,6 +201,73 @@ describe('bindAgentMtls', () => {
 });
 
 // ---------------------------------------------------------------------------
+// MFA approval queue
+// ---------------------------------------------------------------------------
+
+describe('mfa queue', () => {
+  it('listMfa builds the paged GET request', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { items: [], pagination: {} } });
+
+    await api.listMfa(50, 10);
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/mfa?limit=50&offset=10`);
+    expect((init as RequestInit).method).toBe('GET');
+  });
+
+  it('approveMfa sends a { code } body when a code is provided', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'm1', status: 'approved' } });
+
+    const res = await api.approveMfa('m1', '123456');
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/mfa/m1/approve`);
+    expect((init as RequestInit).method).toBe('POST');
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers['content-type']).toBe('application/json');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toEqual({ code: '123456' });
+    expect(res.status).toBe('approved');
+  });
+
+  it('approveMfa omits the body entirely when no code is provided', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'm2', status: 'approved' } });
+
+    await api.approveMfa('m2');
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/mfa/m2/approve`);
+    expect((init as RequestInit).method).toBe('POST');
+    expect((init as RequestInit).body).toBeUndefined();
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers['content-type']).toBeUndefined();
+  });
+
+  it('denyMfa POSTs to the deny endpoint with no body', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'm3', status: 'denied' } });
+
+    const res = await api.denyMfa('m3');
+
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(`${API_URL}/v1/mfa/m3/deny`);
+    expect((init as RequestInit).method).toBe('POST');
+    expect((init as RequestInit).body).toBeUndefined();
+    expect(res.status).toBe('denied');
+  });
+
+  it('url-encodes the mfa id in the action path', async () => {
+    setToken('t');
+    const fetchFn = mockFetchOnce({ body: { id: 'a/b', status: 'denied' } });
+    await api.denyMfa('a/b');
+    expect(fetchFn.mock.calls[0][0]).toBe(`${API_URL}/v1/mfa/a%2Fb/deny`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Login / logout side effects
 // ---------------------------------------------------------------------------
 

@@ -104,6 +104,10 @@ export const browserSpecSchema = z.discriminatedUnion('mode', [
     successUrlIncludes: z.string().max(2048).optional(),
     // Optional non-secret MFA hints, echoed into the plan for SDK-side detection.
     mfa: mfaSpec.optional(),
+    // Optional navigation allowlist (host globs like the target scopes). The SDK
+    // helper refuses to navigate the form flow to a host not on this list — the
+    // browser analogue of proxy-mode host-pinning. Default (omitted) allows all.
+    allowedDomains: z.array(z.string().min(1).max(253)).max(50).optional(),
   }),
 ]);
 
@@ -138,6 +142,8 @@ export type BrowserLoginPlan =
       successUrlIncludes?: string;
       // Non-secret MFA hints (echoed from metadata.browser.mfa) for SDK detection.
       mfa?: MfaSpec;
+      // Non-secret navigation allowlist for the SDK to enforce (host globs).
+      allowedDomains?: string[];
     };
 
 export type BuildPlanResult =
@@ -464,6 +470,7 @@ export function buildBrowserPlan(args: {
           actions,
           ...(spec.successUrlIncludes !== undefined ? { successUrlIncludes: spec.successUrlIncludes } : {}),
           ...(spec.mfa !== undefined ? { mfa: spec.mfa } : {}),
+          ...(spec.allowedDomains !== undefined ? { allowedDomains: spec.allowedDomains } : {}),
         },
       };
     }

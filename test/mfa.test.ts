@@ -1,0 +1,192 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
+import { db, schema } from '../src/db/index.js';
+import { MFA_MAX_PENDING } from '../src/lib/mfa.js';
+import {
+  makeApp,
+  resetDb,
+  auth,
+  registerAndLogin,
+  createPassport,
+  deposit,
+  issueAgent,
+} from './helpers.js';
+
+let app: FastifyInstance;
+beforeAll(async () => {
+  app = await makeApp();
+});
+afterAll(async () => {
+  await app.close();
+});
+beforeEach(async () => {
+  await resetDb();
+});
+
+async function setup(scopes: string[] = ['vault:use', 'target:app.example.com']) {
+  const { token, email } = await registerAndLogin(app);
+  const passportId = await createPassport(app, token);
+  const agent = await issueAgent(app, token, passportId, scopes, 'mfa-bot');
+  const cred = await deposit(app, token, passportId, {
+    target: 'app.example.com',
+    label: 'login',
+    type: 'password',
+    secret: 'pw',
+    metadata: {
+      username: 'alice',
+      browser: {
+        mode: 'form',
+        url: 'https://app.example.com/login',
+        fields: [
+          { selector: '#u', valueFrom: 'username' },
+          { selector: '#p', valueFrom: 'secret' },
+        ],
+        mfa: { kind: 'totp', inputSelector: '#otp' },
+      },
+    },
+  });
+  return { token, email, passportId, agentKey: agent.apiKey, agentId: agent.id, credId: cred.id };
+}
+
+const reqMfa = (key: string, credId: string, body: Record<string, unknown>) =>
+  app.inject({ method: 'POST', url: `/v1/vault/credentials/${credId}/mfa/request`, headers: auth(key), payload: body });
+const pollMfa = (key: string, credId: string, reqId: string) =>
+  app.inject({ method: 'GET', url: `/v1/vault/credentials/${credId}/mfa/request/${reqId}`, headers: auth(key) });
+const listMfa = (token: string) => app.inject({ method: 'GET', url: '/v1/mfa', headers: auth(token) });
+const approveMfa = (token: string, id: string, code?: string) =>
+  app.inject({ method: 'POST', url: `/v1/mfa/${id}/approve`, headers: auth(token), payload: code !== undefined ? { code } : {} });
+const denyMfa = (token: string, id: string) =>
+  app.inject({ method: 'POST', url: `/v1/mfa/${id}/deny`, headers: auth(token) });
+
+describe('MFA approval-queue handoff', () => {
+  it('full flow: request -> owner approves with code -> agent fetches once -> 410 on second fetch', async () => {
+    const s = await setup();
+    const r = await reqMfa(s.agentKey, s.credId, {
+      challengeId: 'ch1',
+      kind: 'totp',
+      channelHint: 'authenticator app',
+      promptText: 'enter the 6-digit code',
+    });
+    expect(r.statusCode).toBe(200);
+    const requestId = r.json().requestId as string;
+    expect(r.json().status).toBe('pending');
+
+    // It surfaces in the owner's queue (non-secret fields only).
+    const list = await listMfa(s.token);
+    const found = list.json().items.find((m: { id: string }) => m.id === requestId);
+    expect(found.kind).toBe('totp');
+    expect(found.channelHint).toBe('authenticator app');
+    expect(found).not.toHaveProperty('sealedCode');
+
+    expect((await pollMfa(s.agentKey, s.credId, requestId)).json().status).toBe('pending');
+
+    expect((await approveMfa(s.token, requestId, '123456')).statusCode).toBe(200);
+
+    // Agent fetches the code exactly once.
+    const got = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(got.statusCode).toBe(200);
+    expect(got.json().status).toBe('approved');
+    expect(got.json().code).toBe('123456');
+    expect(got.json().by).toBe(s.email);
+
+    // Single-use: second fetch is 410 gone.
+    expect((await pollMfa(s.agentKey, s.credId, requestId)).statusCode).toBe(410);
+
+    // Audit trail records the lifecycle but NEVER the code.
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(s.token) });
+    const acts = (trail.json().items as Array<{ action: string }>).map((i) => i.action);
+    expect(acts).toEqual(expect.arrayContaining(['mfa.requested', 'mfa.approved', 'mfa.consumed']));
+    expect(JSON.stringify(trail.json())).not.toContain('123456');
+  });
+
+  it('push/webauthn: approve with no code yields an approved result with code=null', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'p', kind: 'push' })).json().requestId;
+    expect((await approveMfa(s.token, requestId)).statusCode).toBe(200);
+    const got = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(got.json().status).toBe('approved');
+    expect(got.json().code).toBeNull();
+  });
+
+  it('expired request returns 410 and audits mfa.expired', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'e', kind: 'sms' })).json().requestId;
+    await db
+      .update(schema.mfaRequests)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.mfaRequests.id, requestId));
+    const res = await pollMfa(s.agentKey, s.credId, requestId);
+    expect(res.statusCode).toBe(410);
+    expect(res.json().error.code).toBe('expired');
+  });
+
+  it('denied request: the agent poll returns status denied', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'd', kind: 'email' })).json().requestId;
+    expect((await denyMfa(s.token, requestId)).statusCode).toBe(200);
+    expect((await pollMfa(s.agentKey, s.credId, requestId)).json().status).toBe('denied');
+  });
+
+  it('revoking the agent cancels its pending MFA (status revoked) and audits mfa.revoked', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'r', kind: 'totp' })).json().requestId;
+    await app.inject({ method: 'POST', url: `/v1/agents/${s.agentId}/revoke`, headers: auth(s.token) });
+
+    const [row] = await db
+      .select({ status: schema.mfaRequests.status })
+      .from(schema.mfaRequests)
+      .where(eq(schema.mfaRequests.id, requestId))
+      .limit(1);
+    expect(row!.status).toBe('revoked');
+
+    const trail = await app.inject({ method: 'GET', url: '/v1/audit', headers: auth(s.token) });
+    expect((trail.json().items as Array<{ action: string }>).map((i) => i.action)).toContain('mfa.revoked');
+    // No longer in the owner's pending queue.
+    const list = await listMfa(s.token);
+    expect(list.json().items.find((m: { id: string }) => m.id === requestId)).toBeUndefined();
+  });
+
+  it('a stranger cannot approve another owner\'s MFA request (404)', async () => {
+    const s = await setup();
+    const requestId = (await reqMfa(s.agentKey, s.credId, { challengeId: 'x', kind: 'totp' })).json().requestId;
+    const stranger = await registerAndLogin(app);
+    expect((await approveMfa(stranger.token, requestId, '999999')).statusCode).toBe(404);
+  });
+
+  it('a configured delegateApproverId can approve the credential\'s MFA request', async () => {
+    const { token: ownerToken } = await registerAndLogin(app);
+    const passportId = await createPassport(app, ownerToken);
+    const delegate = await registerAndLogin(app);
+    const agent = await issueAgent(app, ownerToken, passportId, ['vault:use', 'target:app.example.com'], 'mfa-bot');
+    const cred = await deposit(app, ownerToken, passportId, {
+      target: 'app.example.com',
+      label: 'login',
+      type: 'password',
+      secret: 'pw',
+      metadata: { delegateApproverId: delegate.id, browser: { mode: 'cookie' } },
+    });
+    const requestId = (await reqMfa(agent.apiKey, cred.id, { challengeId: 'g', kind: 'totp' })).json().requestId;
+
+    // The delegate (not the owner) approves.
+    expect((await approveMfa(delegate.token, requestId, '424242')).statusCode).toBe(200);
+    const got = await pollMfa(agent.apiKey, cred.id, requestId);
+    expect(got.json().code).toBe('424242');
+  });
+
+  it('rate-limits pending MFA requests per credential+agent', async () => {
+    const s = await setup();
+    for (let i = 0; i < MFA_MAX_PENDING; i += 1) {
+      expect((await reqMfa(s.agentKey, s.credId, { challengeId: `c${i}`, kind: 'totp' })).statusCode).toBe(200);
+    }
+    const over = await reqMfa(s.agentKey, s.credId, { challengeId: 'over', kind: 'totp' });
+    expect(over.statusCode).toBe(429);
+    expect(over.json().error.code).toBe('rate_limited');
+  });
+
+  it('requires vault:use to open an MFA request', async () => {
+    const s = await setup(['vault:read', 'target:app.example.com']);
+    const res = await reqMfa(s.agentKey, s.credId, { challengeId: 'c', kind: 'totp' });
+    expect(res.statusCode).toBe(403);
+  });
+});

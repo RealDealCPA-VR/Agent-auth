@@ -38,7 +38,7 @@ export async function resetDb(): Promise<void> {
         // audit_events now has a BEFORE TRUNCATE guard (append-only); disable it
         // just for the test reset (we own the table here), then restore it.
         await tx`ALTER TABLE audit_events DISABLE TRIGGER audit_events_no_truncate`;
-        await tx`TRUNCATE principals, passports, credentials, agents, approval_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
+        await tx`TRUNCATE principals, passports, credentials, agents, approval_requests, mfa_requests, oauth_flows, revoked_sessions, audit_events RESTART IDENTITY CASCADE`;
         await tx`ALTER TABLE audit_events ENABLE TRIGGER audit_events_no_truncate`;
       });
       return;

@@ -71,6 +71,23 @@ def _target_host(target: str) -> str:
 _DEFAULT_TIMEOUT = 30.0
 
 
+def _force_logout(page: Any) -> None:
+    """Force-logout a page after the agent is revoked: clear context cookies and
+    navigate to a blank page so the session can't outlive the revoked agent.
+    Best-effort and never raises."""
+    try:
+        ctx = getattr(page, "context", None)
+        clear = getattr(ctx, "clear_cookies", None) if ctx is not None else None
+        if callable(clear):
+            clear()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        page.goto("about:blank")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 JSON = Dict[str, Any]
 Page = Dict[str, Any]
 
@@ -623,10 +640,85 @@ class AgentAuthClient(_BaseClient):
 
         # The SAFE path: fetch the plan NON-raw (vault:use only — no
         # vault:browser:raw needed), apply it to the page, and return only a
-        # non-secret summary. The secret never leaves this method.
+        # non-secret summary. The secret never leaves this method. A 401 means the
+        # agent was revoked — force-logout the browser before surfacing it.
         cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
-        plan = self._browser_login_by_id(cred_id, raw=False)
+        try:
+            plan = self._browser_login_by_id(cred_id, raw=False)
+        except AgentAuthError as exc:
+            if exc.status == 401:
+                _force_logout(page)
+            raise
         return apply_browser_login(page, plan)
+
+    def resolve_mfa(
+        self,
+        page: Any,
+        id_or_target: str,
+        challenge: Mapping[str, Any],
+        *,
+        input_selector: Optional[str] = None,
+        submit_selector: Optional[str] = None,
+        channel_hint: Optional[str] = None,
+        timeout_s: float = 300.0,
+        poll_interval_s: float = 2.0,
+        sleep: Any = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        """Resolve a detected MFA ``challenge`` via the human approval queue.
+
+        Opens a request, polls until a credential owner approves (or it is denied /
+        expires / times out), and on approval injects the one-time code into the
+        page and submits. **The code flows only into the browser DOM** — it is never
+        placed in the returned resolution dict or logged. Returns
+        ``{"resolved": bool, "status": "approved"|"denied"|"revoked"|"expired"|"timeout", "by"?, "at"?}``.
+        """
+        import time
+
+        sleeper = sleep or time.sleep
+        cred_id = self._resolve_id_or_target(id_or_target, limit=limit)
+        body: Dict[str, Any] = {
+            "challengeId": challenge["challengeId"],
+            "kind": challenge["kind"],
+            "promptText": challenge.get("promptText"),
+        }
+        if channel_hint is not None:
+            body["channelHint"] = channel_hint
+        try:
+            opened = self._request("POST", f"/vault/credentials/{cred_id}/mfa/request", json=body)
+        except AgentAuthError as exc:
+            if exc.status == 401:  # agent revoked
+                _force_logout(page)
+            raise
+        request_id = opened["requestId"]
+
+        max_polls = max(1, int(timeout_s / poll_interval_s) + 1)
+        for _ in range(max_polls):
+            try:
+                res = self._request(
+                    "GET", f"/vault/credentials/{cred_id}/mfa/request/{request_id}"
+                )
+            except AgentAuthError as exc:
+                if exc.status == 410:  # expired / already consumed
+                    return {"resolved": False, "status": "expired"}
+                if exc.status == 401:  # agent revoked mid-flow
+                    _force_logout(page)
+                raise
+            status = res.get("status")
+            if status == "denied":
+                return {"resolved": False, "status": "denied"}
+            if status == "revoked":
+                return {"resolved": False, "status": "revoked"}
+            if status == "approved":
+                code = res.get("code")
+                if code:
+                    if input_selector:
+                        page.fill(input_selector, code)
+                    if submit_selector:
+                        page.click(submit_selector)
+                return {"resolved": True, "status": "approved", "by": res.get("by"), "at": res.get("at")}
+            sleeper(poll_interval_s)
+        return {"resolved": False, "status": "timeout"}
 
     # -- internals ---------------------------------------------------------
 

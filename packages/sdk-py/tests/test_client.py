@@ -831,12 +831,16 @@ class FakeContext:
     def __init__(self) -> None:
         self.added_cookies: Any = None
         self.extra_headers: Any = None
+        self.cookies_cleared = False
 
     def add_cookies(self, cookies: Any) -> None:
         self.added_cookies = cookies
 
     def set_extra_http_headers(self, headers: Any) -> None:
         self.extra_headers = headers
+
+    def clear_cookies(self) -> None:
+        self.cookies_cleared = True
 
 
 class FakePage:
@@ -1066,6 +1070,107 @@ def test_browser_login_form_mode_omits_submitted_without_success_hint():
     # No successUrlIncludes in the plan -> `submitted` key is omitted entirely.
     assert "submitted" not in summary
     assert summary["filled_fields"] == 1
+
+
+_MFA_CHALLENGE = {"kind": "totp", "promptText": "enter code", "detectedAt": "n", "challengeId": "ch1"}
+
+
+def test_resolve_mfa_full_flow_injects_code():
+    cid = "11111111-1111-4111-8111-111111111111"
+    state = {"poll": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/mfa/request"):
+            return ok({"requestId": "req-1", "status": "pending"})
+        if request.method == "GET" and "/mfa/request/req-1" in request.url.path:
+            state["poll"] += 1
+            if state["poll"] == 1:
+                return ok({"status": "pending"})
+            return ok({"status": "approved", "code": "123456",
+                       "by": "owner@example.com", "at": "t"})
+        raise AssertionError(request.url.path)
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    res = client.resolve_mfa(page, cid, _MFA_CHALLENGE, input_selector="#otp",
+                             submit_selector="#go", sleep=lambda *_: None)
+
+    assert res["resolved"] is True
+    assert res["status"] == "approved"
+    assert res["by"] == "owner@example.com"
+    assert ("fill", "#otp", "123456") in page.calls  # code injected into the DOM
+    assert ("click", "#go") in page.calls
+    _assert_no_secret(res, "123456")  # ...but never in the resolution
+
+
+def test_resolve_mfa_denied_does_not_inject():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return ok({"status": "denied"})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    res = client.resolve_mfa(page, cid, _MFA_CHALLENGE, input_selector="#otp", sleep=lambda *_: None)
+    assert res["resolved"] is False
+    assert res["status"] == "denied"
+    assert not any(c[0] == "fill" for c in page.calls)
+
+
+def test_resolve_mfa_410_is_expired():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"requestId": "r", "status": "pending"})
+        return httpx.Response(410, json={"error": {"code": "expired", "message": "gone"}})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    res = client.resolve_mfa(page, cid, _MFA_CHALLENGE, input_selector="#otp", sleep=lambda *_: None)
+    assert res["resolved"] is False
+    assert res["status"] == "expired"
+
+
+def test_form_refuses_navigation_outside_allowed_domains():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "form", "target": "app.example.com", "url": "https://app.example.com/login",
+            "actions": [{"type": "goto", "url": "https://evil.example.org/login"}],
+            "allowedDomains": ["app.example.com"]}
+    with pytest.raises(ValueError, match="allowedDomains"):
+        apply_browser_login(FakePage(), plan)
+
+
+def test_form_allows_subdomain_within_allowed_domains():
+    from agentauth.browser import apply_browser_login
+
+    plan = {"mode": "form", "target": "example.com", "url": "https://app.example.com/login",
+            "actions": [
+                {"type": "goto", "url": "https://app.example.com/login"},
+                {"type": "fill", "selector": "#p", "value": "SECRET"},
+            ],
+            "allowedDomains": ["*.example.com"]}
+    summary = apply_browser_login(FakePage(), plan)
+    assert summary["filled_fields"] == 1
+    assert summary["authenticated"] is True
+
+
+def test_browser_login_force_logout_on_revoked_401():
+    cid = "11111111-1111-4111-8111-111111111111"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "revoked"}})
+
+    client = AgentAuthClient(BASE, "aa_key.secret", transport=make_transport(handler))
+    page = FakePage()
+    with pytest.raises(AgentAuthError) as exc:
+        client.browser_login(page, cid)
+    assert exc.value.status == 401
+    assert page.context.cookies_cleared is True
+    assert ("goto", "about:blank") in page.calls
 
 
 def test_apply_browser_login_unknown_mode_raises():

@@ -213,6 +213,58 @@ export const oauthFlows = pgTable(
   // no extra index is needed.
 );
 
+export const mfaStatus = pgEnum('mfa_status', [
+  'pending',
+  'approved',
+  'denied',
+  'consumed',
+  'expired',
+  'revoked',
+]);
+
+/**
+ * mfa_requests — the human-in-the-loop bridge for a browser-login MFA challenge.
+ * The SDK helper, on detecting an MFA prompt, mints a pending row; the credential
+ * owner (or a delegate) approves it, sealing the one-time code. The agent fetches
+ * the code exactly once (single-use, TTL-bounded), injects it into the browser
+ * DOM, and the row is consumed. The code is stored ONLY in sealed form (passport
+ * DEK, AAD bound to the challenge) and is NEVER written to the audit log — the
+ * trail records challengeId/requestId/target/kind/approver/timestamps only.
+ */
+export const mfaRequests = pgTable(
+  'mfa_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    challengeId: text('challenge_id').notNull(), // client-issued correlation id
+    credentialId: uuid('credential_id')
+      .notNull()
+      .references(() => credentials.id, { onDelete: 'cascade' }),
+    passportId: uuid('passport_id')
+      .notNull()
+      .references(() => passports.id, { onDelete: 'cascade' }),
+    agentId: uuid('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+    principalId: uuid('principal_id').notNull(), // the owner allowed to approve
+    status: mfaStatus('status').notNull().default('pending'),
+    kind: text('kind').notNull(),
+    channelHint: text('channel_hint'),
+    promptText: text('prompt_text'),
+    // Sealed one-time code: { v, alg, iv, ciphertext, tag } — AES-256-GCM under the
+    // passport DEK, AAD bound to the challenge. Null until approved (or for push).
+    sealedCode: jsonb('sealed_code'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decidedBy: uuid('decided_by'),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    byAgentStatus: index('mfa_requests_agent_status_idx').on(t.agentId, t.status),
+    byPassport: index('mfa_requests_passport_idx').on(t.passportId),
+  }),
+);
+
 export const auditAction = pgEnum('audit_action', [
   'principal.register',
   'principal.login',
@@ -229,6 +281,12 @@ export const auditAction = pgEnum('audit_action', [
   'approval.deny',
   'oauth.start',
   'oauth.capture',
+  'mfa.requested',
+  'mfa.approved',
+  'mfa.consumed',
+  'mfa.denied',
+  'mfa.expired',
+  'mfa.revoked',
   'auth.denied',
   'authz.denied',
 ]);

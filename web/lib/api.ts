@@ -268,6 +268,30 @@ export interface OAuthStart {
   state: string;
 }
 
+export type MfaKind =
+  | 'otp'
+  | 'totp'
+  | 'sms'
+  | 'email'
+  | 'push'
+  | 'webauthn'
+  | string;
+
+/** A pending MFA challenge the human caller may approve or deny. */
+export interface MfaRequest {
+  id: string;
+  challengeId: string;
+  credentialId: string;
+  passportId: string;
+  agentId: string;
+  kind: MfaKind;
+  channelHint: string | null;
+  promptText: string | null;
+  status: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Endpoint wrappers
 // ---------------------------------------------------------------------------
@@ -427,6 +451,31 @@ export const api = {
   denyRequest(id: string): Promise<ApprovalRequest> {
     return request<ApprovalRequest>(
       `/v1/approvals/${encodeURIComponent(id)}/deny`,
+      { method: 'POST' },
+    );
+  },
+
+  // --- MFA approval queue ------------------------------------------------
+  listMfa(limit?: number, offset?: number): Promise<Page<MfaRequest>> {
+    return request<Page<MfaRequest>>(`/v1/mfa${pageQuery(limit, offset)}`);
+  },
+
+  // Approve a pending MFA challenge. For code-based kinds (otp/totp/sms/email)
+  // pass the one-time `code`; for push/webauthn omit it ("I approved on my
+  // device") — the body is sent only when a code is provided.
+  approveMfa(
+    id: string,
+    code?: string,
+  ): Promise<{ id: string; status: string }> {
+    return request<{ id: string; status: string }>(
+      `/v1/mfa/${encodeURIComponent(id)}/approve`,
+      { method: 'POST', body: code !== undefined ? { code } : undefined },
+    );
+  },
+
+  denyMfa(id: string): Promise<{ id: string; status: string }> {
+    return request<{ id: string; status: string }>(
+      `/v1/mfa/${encodeURIComponent(id)}/deny`,
       { method: 'POST' },
     );
   },

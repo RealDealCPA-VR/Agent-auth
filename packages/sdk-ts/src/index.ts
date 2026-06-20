@@ -249,6 +249,8 @@ export type BrowserLoginPlan =
       successUrlIncludes?: string;
       /** Non-secret MFA hints (echoed from `metadata.browser.mfa`) for detection. */
       mfa?: MfaSpec;
+      /** Non-secret navigation allowlist (host globs); the SDK refuses off-list navigation. */
+      allowedDomains?: string[];
     };
 
 /** The kind of MFA challenge a login may hit. */
@@ -284,6 +286,36 @@ export interface MfaChallenge {
   detectedAt: string;
   /** Client-issued challenge id (Phase 2 ties it to a server approval request). */
   challengeId: string;
+}
+
+/** Options for {@link AgentAuthClient.resolveMfa}. */
+export interface ResolveMfaOptions {
+  /** Selector of the code input to fill (defaults to the spec's inputSelector). */
+  inputSelector?: string;
+  /** Selector to click after filling the code (defaults to the spec's submitSelector). */
+  submitSelector?: string;
+  /** A non-secret hint shown to the approver (e.g. "code sent to ••••1234"). */
+  channelHint?: string;
+  /** Give up waiting for approval after this long (default 5 minutes). */
+  timeoutMs?: number;
+  /** How often to poll for approval (default 2s). */
+  pollIntervalMs?: number;
+  /** Injectable delay (tests pass a no-op); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * The outcome of an MFA resolution. **Non-secret** — never carries the code. The
+ * code (when approved) flows only into the browser DOM.
+ */
+export interface MfaResolution {
+  /** True only when an approved code was injected (or a push/webauthn confirmed). */
+  resolved: boolean;
+  status: 'approved' | 'denied' | 'revoked' | 'expired' | 'timeout';
+  /** The approver's email (approved only). */
+  by?: string | null;
+  /** ISO-8601 decision time (approved only). */
+  at?: string | null;
 }
 
 /**
@@ -350,6 +382,8 @@ export interface BrowserPage {
 export interface BrowserContextLike {
   addCookies?: (cookies: PlanCookie[]) => Promise<unknown>;
   setExtraHTTPHeaders?: (headers: Record<string, string>) => Promise<unknown>;
+  /** Clear all cookies (used to force-logout a revoked agent's browser session). */
+  clearCookies?: () => Promise<unknown>;
 }
 
 // --- Error type -------------------------------------------------------------
@@ -639,6 +673,47 @@ function extractPromptText(html: string): string | undefined {
   return snippet ? snippet.slice(0, 160) : undefined;
 }
 
+/** Reduce a URL to its bare lowercase host. */
+function urlHost(u: string): string {
+  try {
+    return new URL(u).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/** True if `host` matches one of `allowed` (exact, `*` wildcard, or `*.suffix`). */
+function hostAllowed(host: string, allowed: string[]): boolean {
+  return allowed.some((raw) => {
+    const p = raw.trim().toLowerCase();
+    if (p === '*') return true;
+    if (p.startsWith('*.')) {
+      const suffix = p.slice(2);
+      return host === suffix || host.endsWith('.' + suffix);
+    }
+    return host === p;
+  });
+}
+
+/**
+ * Force-logout a page after the agent is revoked: clear the context cookies and
+ * navigate to a blank page so the authenticated session does not outlive the
+ * revoked agent. Best-effort and never throws.
+ */
+async function forceLogout(page: BrowserPage): Promise<void> {
+  try {
+    const ctx = page.context?.();
+    if (ctx?.clearCookies) await ctx.clearCookies();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await page.goto('about:blank');
+  } catch {
+    /* ignore */
+  }
+}
+
 /** A client-side challenge id (Phase 2 replaces this with a server request id). */
 function genChallengeId(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -753,10 +828,18 @@ export async function applyBrowserLogin(
     }
 
     case 'form': {
+      const allow = plan.allowedDomains;
       let filledFields = 0;
       for (const action of plan.actions) {
         switch (action.type) {
           case 'goto':
+            // Navigation allowlist: refuse to steer the flow to an off-list host
+            // (browser analogue of proxy-mode host-pinning). Default = allow all.
+            if (allow && allow.length > 0 && !hostAllowed(urlHost(action.url), allow)) {
+              throw new TypeError(
+                `AgentAuth SDK: navigation to ${urlHost(action.url)} is not in allowedDomains`,
+              );
+            }
             await page.goto(action.url);
             break;
           case 'fill':
@@ -1001,9 +1084,98 @@ export class AgentAuthClient extends Transport {
     }
     // The SAFE path: needs only vault:use. The plan is fetched non-raw, applied to
     // the page, and only a non-secret summary is returned — the secret never
-    // leaves this helper.
-    const plan = await this.fetchBrowserPlan(idOrTarget, false);
+    // leaves this helper. If the agent has been revoked (401), force-logout the
+    // browser so the session can't outlive the revoked agent.
+    let plan: BrowserLoginPlan;
+    try {
+      plan = await this.fetchBrowserPlan(idOrTarget, false);
+    } catch (err) {
+      if (err instanceof AgentAuthError && err.status === 401) await forceLogout(page);
+      throw err;
+    }
     return applyBrowserLogin(page, plan);
+  }
+
+  /**
+   * Resolve a detected MFA {@link MfaChallenge} via the human approval queue:
+   * opens a request, polls until a credential owner approves (or it is denied /
+   * expires / times out), and on approval injects the one-time code into the page
+   * and submits. **The code flows only into the browser DOM** — it is never placed
+   * in the returned {@link MfaResolution} or logged.
+   *
+   * Call this when {@link browserLogin} returns a summary with an `mfa` block.
+   *
+   * @throws {AgentAuthError} 403 (missing vault:use), 404, 429 (too many pending).
+   */
+  async resolveMfa(
+    page: BrowserPage,
+    idOrTarget: string,
+    challenge: MfaChallenge,
+    opts: ResolveMfaOptions = {},
+  ): Promise<MfaResolution> {
+    const id = isUuid(idOrTarget) ? idOrTarget : await this.resolveTarget(idOrTarget);
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
+    const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+
+    // 1) Open the approval request (the owner's queue / phone lights up). A 401
+    // means the agent was revoked — force-logout the browser before surfacing it.
+    let opened: { requestId: string; status: string };
+    try {
+      opened = await this.request<{ requestId: string; status: string }>({
+        method: 'POST',
+        path: `/v1/vault/credentials/${encodeURIComponent(id)}/mfa/request`,
+        body: {
+          challengeId: challenge.challengeId,
+          kind: challenge.kind,
+          ...(opts.channelHint !== undefined ? { channelHint: opts.channelHint } : {}),
+          promptText: challenge.promptText,
+        },
+        authorization: this.authHeader,
+      });
+    } catch (err) {
+      if (err instanceof AgentAuthError && err.status === 401) await forceLogout(page);
+      throw err;
+    }
+    const requestId = opened.requestId;
+
+    // 2) Poll for the human's decision until resolved or the deadline passes.
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let res: { status: string; code?: string | null; by?: string | null; at?: string | null };
+      try {
+        res = await this.request({
+          method: 'GET',
+          path: `/v1/vault/credentials/${encodeURIComponent(id)}/mfa/request/${encodeURIComponent(requestId)}`,
+          authorization: this.authHeader,
+        });
+      } catch (err) {
+        // 410 = expired/consumed: terminal, not approved.
+        if (err instanceof AgentAuthError && err.status === 410) return { resolved: false, status: 'expired' };
+        // 401 = agent revoked mid-flow: force-logout before surfacing.
+        if (err instanceof AgentAuthError && err.status === 401) await forceLogout(page);
+        throw err;
+      }
+      if (res.status === 'denied') return { resolved: false, status: 'denied' };
+      if (res.status === 'revoked') return { resolved: false, status: 'revoked' };
+      if (res.status === 'approved') {
+        // 3) Inject the code into the DOM (never returned upward). A push/webauthn
+        // approval carries no code — nothing to fill, the session already advanced.
+        if (res.code) {
+          const inputSelector = opts.inputSelector;
+          if (inputSelector) {
+            if (page.fill) await page.fill(inputSelector, res.code);
+            else if (page.type) await page.type(inputSelector, res.code);
+          }
+          const submitSelector = opts.submitSelector;
+          if (submitSelector) await page.click(submitSelector);
+        }
+        return { resolved: true, status: 'approved', by: res.by ?? null, at: res.at ?? null };
+      }
+      // pending
+      if (Date.now() >= deadline) return { resolved: false, status: 'timeout' };
+      await sleep(pollIntervalMs);
+    }
   }
 
   /**

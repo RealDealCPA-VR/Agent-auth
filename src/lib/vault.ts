@@ -225,6 +225,44 @@ async function freshOauthAccessToken(
  * consumed via the approval workflow (needs the calling agent's id).
  */
 /**
+ * Seal a short plaintext (e.g. an MFA one-time code) under a passport's DEK with
+ * an explicit AAD. Returns the sealed box, or null if the passport is gone. The
+ * plaintext buffer is the caller's to scrub. Used by the MFA flow to store an
+ * approved code at rest in sealed form only — never in cleartext, never logged.
+ */
+export async function sealForPassport(
+  passportId: string,
+  plaintext: Buffer,
+  aad: Buffer,
+): Promise<SealedBox | null> {
+  const dek = await loadDek(passportId);
+  if (!dek) return null;
+  try {
+    return seal(dek, plaintext, aad);
+  } finally {
+    dek.fill(0);
+  }
+}
+
+/** Open a passport-sealed box with its AAD. Returns null on any failure (wrong
+ * key, tamper, missing passport) — never throws crypto internals. */
+export async function openForPassport(
+  passportId: string,
+  sealed: SealedBox,
+  aad: Buffer,
+): Promise<Buffer | null> {
+  const dek = await loadDek(passportId);
+  if (!dek) return null;
+  try {
+    return open(dek, sealed, aad);
+  } catch {
+    return null;
+  } finally {
+    dek.fill(0);
+  }
+}
+
+/**
  * Read a credential's target host WITHOUT unsealing it or charging a use. Lets
  * the proxy route run its SSRF/path guards before reserving a maxUses slot or
  * spending an approval, so a guard-rejected call never burns one. Returns null

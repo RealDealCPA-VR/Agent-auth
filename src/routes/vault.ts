@@ -7,6 +7,7 @@ import { hasScope, allowsTarget } from '../auth/agent.js';
 import { useCredential, getCredentialTarget, getCredentialMeta, releaseUse } from '../lib/vault.js';
 import { proxyRequest, precheckProxyTarget } from '../lib/proxy.js';
 import { buildBrowserPlan, precheckBrowserSpec } from '../lib/browser.js';
+import { createMfaRequest, fetchMfaCode } from '../lib/mfa.js';
 import { audit } from '../lib/audit.js';
 import { fail, paginationSchema, readPage } from '../lib/http.js';
 
@@ -511,6 +512,116 @@ export async function vaultRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send(built.plan);
+    },
+  );
+
+  // MFA handoff — agent side. On detecting an MFA challenge mid-browser-login, the
+  // SDK helper opens a request here; a human owner resolves it; the SDK then fetches
+  // the one-time code (once) and injects it into the browser DOM. The code never
+  // returns to the agent's reasoning layer — same confinement as the login plan.
+  const mfaRequestSchema = z.object({
+    challengeId: z.string().min(1).max(200),
+    kind: z.enum(['otp', 'totp', 'sms', 'email', 'push', 'webauthn']),
+    channelHint: z.string().max(256).optional(),
+    promptText: z.string().max(1024).optional(),
+  });
+
+  app.post(
+    '/v1/vault/credentials/:id/mfa/request',
+    { schema: { tags: ['vault'], summary: 'Open an MFA approval request', security: [{ agentKey: [] }] } },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const agent = req.agent!;
+      if (!hasScope(agent.scopes, 'vault:use'))
+        return fail(req, reply, 403, 'forbidden', 'missing scope: vault:use');
+
+      const meta = await getCredentialMeta(agent.passportId, id);
+      if (!meta) return fail(req, reply, 404, 'not_found', 'credential not found');
+      if (!allowsTarget(agent.scopes, meta.target))
+        return fail(req, reply, 403, 'forbidden', `agent not scoped for target: ${meta.target}`);
+
+      const parsed = mfaRequestSchema.safeParse(req.body);
+      if (!parsed.success)
+        return fail(req, reply, 400, 'invalid_request', 'invalid mfa request', parsed.error.flatten());
+
+      const result = await createMfaRequest({
+        passportId: agent.passportId,
+        credentialId: id,
+        agentId: agent.agentId,
+        challengeId: parsed.data.challengeId,
+        kind: parsed.data.kind,
+        channelHint: parsed.data.channelHint ?? null,
+        promptText: parsed.data.promptText ?? null,
+      });
+      if (!result.ok) {
+        if (result.reason === 'rate_limited')
+          return fail(req, reply, 429, 'rate_limited', 'too many pending MFA requests');
+        if (result.reason === 'bad_kind')
+          return fail(req, reply, 400, 'invalid_request', 'unknown mfa kind');
+        return fail(req, reply, 404, 'not_found', 'credential not found');
+      }
+
+      await audit({
+        action: 'mfa.requested',
+        success: true,
+        agentId: agent.agentId,
+        passportId: agent.passportId,
+        credentialId: id,
+        // Never log the prompt/secret; record correlation + kind only.
+        detail: { requestId: result.requestId, challengeId: parsed.data.challengeId, kind: parsed.data.kind, target: meta.target },
+        ip: req.ip,
+      });
+      return reply.send({ requestId: result.requestId, status: 'pending' });
+    },
+  );
+
+  app.get(
+    '/v1/vault/credentials/:id/mfa/request/:requestId',
+    { schema: { tags: ['vault'], summary: 'Poll an MFA request; returns the code once approved', security: [{ agentKey: [] }] } },
+    async (req, reply) => {
+      const { id, requestId } = req.params as { id: string; requestId: string };
+      const agent = req.agent!;
+      if (!hasScope(agent.scopes, 'vault:use'))
+        return fail(req, reply, 403, 'forbidden', 'missing scope: vault:use');
+
+      const res = await fetchMfaCode(agent.passportId, id, agent.agentId, requestId);
+      switch (res.status) {
+        case 'not_found':
+          return fail(req, reply, 404, 'not_found', 'mfa request not found');
+        case 'pending':
+          return reply.send({ status: 'pending' });
+        case 'denied':
+          return reply.send({ status: 'denied' });
+        case 'revoked':
+          return reply.send({ status: 'revoked' });
+        case 'gone':
+          return fail(req, reply, 410, 'gone', 'mfa code already consumed');
+        case 'expired':
+          await audit({
+            action: 'mfa.expired',
+            success: false,
+            agentId: agent.agentId,
+            passportId: agent.passportId,
+            credentialId: id,
+            detail: { requestId },
+            ip: req.ip,
+          });
+          return fail(req, reply, 410, 'expired', 'mfa request expired');
+        case 'approved':
+          await audit({
+            action: 'mfa.consumed',
+            success: true,
+            agentId: agent.agentId,
+            passportId: agent.passportId,
+            credentialId: id,
+            // Never log the code; record the approver + correlation only.
+            detail: { requestId, by: res.by },
+            ip: req.ip,
+          });
+          // `code` is secret-bearing (the SDK injects it into the DOM and never
+          // returns it up to the caller's reasoning layer).
+          return reply.send({ status: 'approved', code: res.code, by: res.by, at: res.at });
+      }
     },
   );
 }

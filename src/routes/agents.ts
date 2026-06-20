@@ -7,6 +7,7 @@ import { hashSecret, generateKeySecret, formatApiKey } from '../crypto/secrets.j
 import { isValidScope } from '../auth/agent.js';
 import { fingerprintFromPem, normalizeFingerprint } from '../auth/mtls.js';
 import { audit } from '../lib/audit.js';
+import { revokePendingMfaForAgent } from '../lib/mfa.js';
 import { fail, paginationSchema, readPage, pgErrorCode } from '../lib/http.js';
 
 // agent ids are Postgres uuid; a non-uuid would make the driver throw 22P02 (500).
@@ -196,6 +197,21 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
           tx,
         );
       });
+
+      // Fail-closed: cancel any pending MFA requests for the revoked agent so an
+      // approval can't resolve into a code after the agent is gone.
+      const cancelled = await revokePendingMfaForAgent(id);
+      if (cancelled.length > 0) {
+        await audit({
+          action: 'mfa.revoked',
+          success: true,
+          principalId: req.human!.sub,
+          passportId: row.passportId,
+          agentId: id,
+          detail: { count: cancelled.length },
+          ip: req.ip,
+        });
+      }
 
       return reply.send({ id, revoked: true });
     },
