@@ -185,6 +185,52 @@ plan leaves the server — the trust boundary moves to your process. **Prefer
 > surface secret values to the model. MCP agents authenticate with
 > `use_credential` or `proxy_request`.
 
+**Browser host-pinning.** A login plan is pinned to the credential's target host: the
+optional `metadata.browser.allowedDomains` allowlist (echoed into every plan) makes the
+SDK **refuse any navigation, cookie/header injection, form fill, or MFA-code injection on
+an off-list host** — checked *before* any secret touches the page, and re-checked at the
+moment the code is typed. Revoking the agent mid-flow forces a logout (clears cookies,
+navigates to `about:blank`) so an authenticated session can't outlive the revoked agent.
+
+### 🔑 MFA handoff — a human approves, the agent never sees the code
+
+Real logins hit MFA. AgentAuth turns that from a dead end into a **human-in-the-loop
+handoff**: the agent drives the browser to the challenge page, a human approves from
+their phone, and the one-time code is injected into the page — **without the code ever
+reaching the agent's reasoning layer or any log.**
+
+When `browserLogin` lands on an MFA challenge (detected from the URL, page text, or a
+one-time-code input — tunable via `metadata.browser.mfa`), the summary comes back
+`{ authenticated: false, mfa: { kind, promptText, challengeId } }`. `promptText` is
+non-secret page text (digit runs masked), safe to surface to an LLM. The agent then
+calls **`resolveMfa(page, target, challenge)`** (Python: `resolve_mfa`), which:
+
+1. opens an approval request (`POST /v1/vault/credentials/:id/mfa/request`),
+2. polls until a human approves it from the **`/mfa` admin queue** — the passport
+   owner, or a per-credential **`metadata.delegateApproverId`**,
+3. injects the approved code straight into the page's DOM and submits.
+
+The one-time code is **sealed at rest** under the passport DEK (AAD bound to the
+request's immutable row id), **single-use** (an atomic consume → `410` on a second
+fetch), **TTL-bounded** (5 min), rate-limited per credential+agent, and **never logged
+or returned** to the agent — `resolveMfa` hands back only `{ resolved, status, by, at }`.
+Revoking the agent (or narrowing its target scope) cancels any pending request and zeroes
+the sealed code. Every step emits an `mfa.*` audit event; the code value appears in none
+of them.
+
+```ts
+const summary = await aa.browserLogin(page, 'irs.gov');
+if (summary.mfa) {
+  // A human taps "approve" in the admin queue; the code lands in the page, not here.
+  const r = await aa.resolveMfa(page, 'irs.gov', summary.mfa);
+  // r === { resolved: true, status: 'approved', by: 'cpa@firm.com', at: '…' }
+}
+```
+
+> Like browser-login, MFA resolution is an **SDK feature, not an MCP tool** — it needs a
+> live page to inject the code into. The human approval side is the admin web UI's
+> `/mfa` queue (approve with the code, or deny).
+
 ### 🛡️ Hardened on every layer
 
 Argon2id password & key hashing · constant-time login (no user enumeration) ·
@@ -277,7 +323,9 @@ curl -s $BASE/v1/agents/<agentId>/revoke -X POST -H "authorization: Bearer $TOKE
 | Agents    | `POST/GET /v1/agents`, `POST /v1/agents/:id/revoke`                  | Human     |
 | **Vault** | `GET /v1/vault/credentials`, `POST /v1/vault/credentials/:id/use`    | **Agent** |
 | **Proxy** | `POST /v1/vault/credentials/:id/proxy` (secret-free; `vault:proxy`)  | **Agent** |
-| **Browser** | `POST /v1/vault/credentials/:id/browser-login` (login plan; `vault:use`) | **Agent** |
+| **Browser** | `POST /v1/vault/credentials/:id/browser-login` (login plan; `vault:use`, `?raw=true` needs `vault:browser:raw`) | **Agent** |
+| **MFA**     | `POST/GET /v1/vault/credentials/:id/mfa/request[/:reqId]` (open + poll; `vault:use`) | **Agent** |
+| **MFA**     | `GET /v1/mfa`, `POST /v1/mfa/:id/approve` · `/deny` (approval queue)  | Human     |
 | Audit     | `GET /v1/audit`, `GET /v1/audit/verify`                              | Human     |
 | Ops       | `GET /healthz`, `/readyz`, `/metrics`, `/docs`                       | —         |
 
@@ -295,11 +343,13 @@ src/
     agent.ts        fail-closed agent auth · scope + target enforcement
   lib/
     vault.ts        deposit / unseal (transient DEK handling, buffer scrubbing)
+    browser.ts      browser-login plan builder · host-pinning · spec validation
+    mfa.ts          MFA approval handoff · sealed single-use codes · owner/delegate authz
     audit.ts        HMAC hash-chained, tamper-evident audit log + verifier
     http.ts         one error envelope · pagination
     metrics.ts      Prometheus counters
-  db/schema.ts      principals · passports · credentials · agents · revoked_sessions · audit_events
-  routes/           principals · passports · agents · vault · audit · guards
+  db/schema.ts      principals · passports · credentials · agents · revoked_sessions · audit_events · mfa_requests
+  routes/           principals · passports · agents · vault · mfa · audit · guards
 ```
 
 ## 🧪 Tested like a vault — a comprehensive unit + integration suite across server, SDKs, and web, all green
@@ -339,9 +389,9 @@ single request.
 ## 🧩 Ecosystem
 
 - **MCP server** — [`packages/mcp-server`](./packages/mcp-server): drop-in Model Context Protocol server exposing `list_credentials`, `use_credential`, and `proxy_request` (secret-free proxy mode) tools. Point any MCP-capable agent (Claude Desktop, etc.) at it with `AGENTAUTH_API_KEY` and your agents get the vault as tools — **zero code**.
-- **TypeScript SDK** — [`packages/sdk-ts`](./packages/sdk-ts): `new AgentAuthClient({ baseUrl, apiKey })` then `await client.useCredential('github.com')`. Plus a `HumanClient` for the management API.
+- **TypeScript SDK** — [`packages/sdk-ts`](./packages/sdk-ts): `new AgentAuthClient({ baseUrl, apiKey })` then `await client.useCredential('github.com')` — plus `proxy`, `browserLogin`, and `resolveMfa` for secret-free proxying, browser logins, and MFA handoff. A `HumanClient` covers the management API.
 - **Python SDK** — [`packages/sdk-py`](./packages/sdk-py): the same surface (`AgentAuthClient`, `HumanClient`) over `httpx`.
-- **Admin web UI** — [`web/`](./web): a Next.js console for login, passports, credential deposit, agent issuance/revocation, the approvals queue, OAuth connect, and the audit trail.
+- **Admin web UI** — [`web/`](./web): a Next.js console for login, passports, credential deposit, agent issuance/revocation, the approvals queue, the **MFA approval queue**, OAuth connect, and the audit trail.
 - **Runnable examples** — [`examples/`](./examples): copy-paste TS + Python agents that fetch and use a credential.
 
 ## ✅ What ships today
@@ -350,6 +400,7 @@ single request.
 - 🔁 **Zero-downtime key rotation** — KEK, JWT signing key, and audit HMAC key are all versioned and rotatable. See the [rotation runbook](./docs/ROTATION.md); the re-wrap runs via `pnpm db:rotate` (local) / `node dist/db/rotate-keys.js` (in the shipped image).
 - 🪪 **OAuth credential capture** — authorize a provider in the browser once (PKCE auth-code); AgentAuth seals the tokens and **transparently refreshes** them when an agent uses the credential. Proactive refresh requires the provider to return `expires_in` (so expiry is known); a provider that issues a `refresh_token` but **omits** `expires_in` is treated as freshness-unknown and is **not** proactively refreshed — configure such providers to return `expires_in`, or a server-side expiry surfaces as a downstream `401`.
 - 📜 **Per-credential policies** — max-uses, time windows, and **human approval workflows** (request → approve → single-use grant) gate sensitive credentials.
+- 🖥️ **Browser-login + MFA handoff** — turn a credential into a browser-login plan an SDK confines to the page, and resolve MFA challenges through a human approval queue — the one-time code reaches the page, never the agent or a log.
 - 🌐 **mTLS agent identity** — agents can authenticate with a client certificate (native or proxy-terminated) instead of a bearer key.
 - 🔌 **TLS termination** — native HTTPS (`HTTPS_CERT`/`HTTPS_KEY`) or front it with a proxy.
 
